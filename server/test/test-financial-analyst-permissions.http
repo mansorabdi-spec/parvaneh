@@ -1,0 +1,109 @@
+### Financial Analyst Permission Tests
+### Use this file with REST Client extension in VS Code
+
+@baseUrl = http://localhost:3000/api
+@financialAnalystNationalCode = 1718933002
+@financialAnalystPassword = password
+
+### 1. Login as Financial Analyst
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "nationalCode": "{{financialAnalystNationalCode}}",
+  "password": "{{financialAnalystPassword}}"
+}
+
+### Extract token from login response
+@token = {{login.response.body.token}}
+
+### 2. Test: View Person Info (Should PASS - has view_person_info permission)
+GET {{baseUrl}}/persons/by-national-code/1234567890
+Authorization: Bearer {{token}}
+
+### 3. Test: View Vehicle Info (Should PASS - has view_vehicle_info permission)
+GET {{baseUrl}}/vehicles/by-tracking/TRACK001
+Authorization: Bearer {{token}}
+
+### 4. Test: View Payments (Should PASS - has view_payments permission)
+GET {{baseUrl}}/payments/offline
+Authorization: Bearer {{token}}
+
+### 5. Test: View Request Details (Should PASS - has multiple view permissions)
+GET {{baseUrl}}/request/by-tracking/TRACK001
+Authorization: Bearer {{token}}
+
+### 6. Test: Create Offline Payment (Should PASS - has edit permission for payments)
+POST {{baseUrl}}/payments/offline
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "RequestID": 1,
+  "Amount": 100000,
+  "PaymentDate": "2025-10-19",
+  "ReceiptNumber": "REC-001",
+  "Description": "تست پرداخت آفلاین"
+}
+
+### 7. Test: View My Tasks (Should PASS - authenticated user)
+GET {{baseUrl}}/approvals/my-tasks
+Authorization: Bearer {{token}}
+
+### 8. Test: Approve/Reject Request (Should PASS - has approve_request permission)
+POST {{baseUrl}}/approvals/1/decision
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "decision": "approved",
+  "comment": "پرداخت تایید شد"
+}
+
+### 9. Test: Edit Person Info (Should FAIL - only has view, not edit permission)
+POST {{baseUrl}}/persons/upsert
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "NationalCode": "1234567890",
+  "FullName": "تست",
+  "FatherName": "تست"
+}
+
+### 10. Test: View Workflow Request Details (Should PASS - has view permissions)
+GET {{baseUrl}}/workflow/requests/1
+Authorization: Bearer {{token}}
+
+### 11. Test: Make Workflow Decision (Should PASS - has approve/reject permissions)
+POST {{baseUrl}}/workflow/steps/1/decision
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "decision": "approved",
+  "comment": "تایید شد"
+}
+
+### 12. Test: Upload Payment Receipt (Should FAIL - needs view_payment_documents edit permission)
+# Note: Financial analyst only has VIEW permission for documents, not EDIT
+POST {{baseUrl}}/uploads/receipt
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="receipt.jpg"
+Content-Type: image/jpeg
+
+< ./test-receipt.jpg
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 13. Test: Access Without Token (Should FAIL - 401 Unauthorized)
+GET {{baseUrl}}/payments/offline
+
+### Summary of Expected Results:
+# Tests 2-8, 10-11: Should return 200 OK (Permission granted)
+# Test 9: Should return 403 Forbidden (No edit permission for persons)
+# Test 12: Should return 403 Forbidden (No edit permission for payment documents)
+# Test 13: Should return 401 Unauthorized (No token provided)

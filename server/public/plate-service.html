@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>سرویس استعلام پلاک</title>
+    <style>
+        body {
+            font-family: 'Tahoma', sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input[type="text"]:focus {
+            border-color: #007bff;
+            outline: none;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .btn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .result.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .result.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .result-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: rgba(255,255,255,0.5);
+            border-radius: 3px;
+        }
+        .loading {
+            text-align: center;
+            color: #007bff;
+            font-weight: bold;
+        }
+        .no-results {
+            text-align: center;
+            color: #6c757d;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>سرویس استعلام تاریخ انقضای پروانه</h1>
+            <p>برای استعلام تاریخ انقضای پروانه، شماره پلاک خودرو را وارد کنید</p>
+        </div>
+
+        <div class="form-group">
+            <label for="plateNumber">شماره پلاک:</label>
+            <input type="text" id="plateNumber" placeholder="مثال: 123ب45567" />
+        </div>
+
+        <button class="btn" onclick="searchPlate()" id="searchBtn">استعلام</button>
+
+        <div id="loading" class="loading" style="display: none;">
+            در حال جستجو...
+        </div>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        async function searchPlate() {
+            const plateNumber = document.getElementById('plateNumber').value.trim();
+            const searchBtn = document.getElementById('searchBtn');
+            const loading = document.getElementById('loading');
+            const result = document.getElementById('result');
+
+            if (!plateNumber) {
+                alert('لطفاً شماره پلاک را وارد کنید');
+                return;
+            }
+
+            // Show loading
+            searchBtn.disabled = true;
+            loading.style.display = 'block';
+            result.style.display = 'none';
+
+            try {
+                const response = await fetch(`/api/plate-service/plate-expiry?plateNumber=${encodeURIComponent(plateNumber)}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.data && data.data.length > 0) {
+                        displayResults(data.data);
+                    } else {
+                        displayNoResults();
+                    }
+                } else {
+                    displayError(data.message || 'خطا در استعلام');
+                }
+            } catch (error) {
+                displayError('خطا در ارتباط با سرور: ' + error.message);
+            } finally {
+                // Hide loading
+                searchBtn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+
+        function displayResults(data) {
+            const result = document.getElementById('result');
+            result.className = 'result success';
+            result.style.display = 'block';
+
+            let html = `<h3>نتایج یافت شده (${data.length} رکورد):</h3>`;
+            
+            data.forEach(item => {
+                html += `
+                    <div class="result-item">
+                        <strong>شماره پیگیری:</strong> ${item.TrackingNo}<br>
+                        <strong>نوع پروانه:</strong> ${item.LicenseTypeName}<br>
+                        <strong>نوع عملیات:</strong> ${item.EventType}<br>
+                        <strong>تاریخ صدور:</strong> ${item.IssueDate}<br>
+                        <strong>تاریخ انقضا:</strong> ${item.ExpiryDate}<br>
+                        <strong>وضعیت:</strong> ${item.Status}<br>
+                        <strong>کد ملی:</strong> ${item.NationalCode || '-'}<br>
+                        <strong>شناسه ملی شرکت:</strong> ${item.CompanyNationalId || '-'}<br>
+                        <strong>تاریخ ایجاد:</strong> ${new Date(item.CreatedAt).toLocaleString('fa-IR')}
+                    </div>
+                `;
+            });
+
+            result.innerHTML = html;
+        }
+
+        function displayNoResults() {
+            const result = document.getElementById('result');
+            result.className = 'result success';
+            result.style.display = 'block';
+            result.innerHTML = '<div class="no-results">موردی یافت نشد</div>';
+        }
+
+        function displayError(message) {
+            const result = document.getElementById('result');
+            result.className = 'result error';
+            result.style.display = 'block';
+            result.innerHTML = `<strong>خطا:</strong> ${message}`;
+        }
+
+        // Allow Enter key to trigger search
+        document.getElementById('plateNumber').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchPlate();
+            }
+        });
+    </script>
+</body>
+</html>
