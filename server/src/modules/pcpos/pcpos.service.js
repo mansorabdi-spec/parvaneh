@@ -21,6 +21,7 @@ import {
 } from './pcpos.store.js';
 
 let deviceBusy = false;
+let activeRequestId = null;
 
 const STATE_TEXT = {
   idle: 'آزاد',
@@ -33,16 +34,24 @@ const STATE_TEXT = {
   processing: 'در حال پردازش',
 };
 
-async function withDevice(work) {
+async function withDevice(work, requestId = null) {
   if (deviceBusy) {
     throw new PcPosError('دستگاه POS در حال انجام تراکنش دیگری است. تا مشخص شدن نتیجهٔ همان تراکنش صبر کنید', 409);
   }
   deviceBusy = true;
+  activeRequestId = requestId == null ? null : String(requestId);
   try {
     return await work();
   } finally {
     deviceBusy = false;
+    activeRequestId = null;
   }
+}
+
+export function paymentInProgress(requestId) {
+  if (!deviceBusy) return false;
+  if (requestId == null || activeRequestId == null) return true;
+  return String(activeRequestId) === String(requestId);
 }
 
 function sleep(ms) {
@@ -406,7 +415,7 @@ export async function purchase(input) {
       requestFrame,
       target: endpoint(config),
     });
-  });
+  }, input.requestId);
 }
 
 export async function payBill(input) {
@@ -504,17 +513,15 @@ export async function inquiry(input = {}) {
         outcome = 'unknown';
         shouldInquiry = true;
         message = `خرید هنوز روی دستگاه باز است (${stateMessage(status.state)}). خرید را از نو نفرستید و بعد از تمام شدن کارت، دوباره استعلام بگیرید.`;
-      } else if (related && !live && accepted) {
-        outcome = 'unknown';
-        message = 'دستگاه الان آزاد است. اگر رسید پرداخت چاپ شده، خرید را تکرار نکنید. اگر رسیدی چاپ نشده، نتیجه نامعلوم مانده و باید همان رسید دستگاه بررسی شود.';
       } else if (related && !live) {
         outcome = 'failed';
         shouldRetry = true;
-        message = 'کارتخوان خریدی در حال انجام ندارد. ارسال قبلی به دستگاه نرسیده و می‌توانید دوباره پرداخت کنید.';
+        message = accepted
+          ? 'کارتخوان آزاد است و این خرید روی آن باز نیست. اگر رسیدی چاپ نشده، دوباره پرداخت کنید.'
+          : 'کارتخوان خریدی در حال انجام ندارد. ارسال قبلی به دستگاه نرسیده و می‌توانید دوباره پرداخت کنید.';
         await updateTransaction(related.Id, {
           outcome: 'failed',
           errorMessage: message,
-          deviceAccepted: false,
           resolvedByInquiry: true,
         });
       }
@@ -578,6 +585,33 @@ export async function confirmPairing(code) {
   if (!token) return { ok: false, message: 'پاسخ جفت‌سازی قابل خواندن نیست.' };
   saveToken(token);
   return { ok: true, paired: true, message: 'کارتخوان جفت شد. حالا پرداخت را بزنید.' };
+}
+
+async function deviceHasLivePayment() {
+  const config = getPcPosConfig();
+  if (!config.host || !config.token) return false;
+  const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 8000 });
+  const status = readStatus(transport);
+  return status.kind === 'state' && status.live;
+}
+
+export async function releaseStalePurchase(transaction) {
+  if (!transaction || !['pending', 'unknown'].includes(transaction.Outcome)) {
+    return { active: false, released: false };
+  }
+  if (paymentInProgress(transaction.RequestId)) {
+    return { active: true, released: false };
+  }
+  if (!deviceBusy && await deviceHasLivePayment()) {
+    return { active: true, released: false };
+  }
+  const accepted = Boolean(transaction.DeviceAccepted);
+  await updateTransaction(transaction.Id, {
+    outcome: 'failed',
+    errorMessage: 'این پرداخت روی کارتخوان باز نبود و قفل پرونده برداشته شد',
+    resolvedByInquiry: true,
+  });
+  return { active: false, released: true, accepted };
 }
 
 export async function getStoredTransaction(id) {

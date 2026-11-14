@@ -1,7 +1,7 @@
 import { getPool, sql } from '../lib/db.js';
 import { initializeWorkflow } from './workflow.controller.js';
 import { getPcPosPublicSettings, savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
-import { confirmPairing, inquiry, purchase, startPairing } from '../modules/pcpos/pcpos.service.js';
+import { confirmPairing, inquiry, purchase, releaseStalePurchase, startPairing } from '../modules/pcpos/pcpos.service.js';
 import { getLatestPurchaseByRequestId, getTransaction } from '../modules/pcpos/pcpos.store.js';
 
 /**
@@ -629,22 +629,27 @@ export async function payKioskWithPos(req, res, next) {
       }, { amount, paid: true }));
     }
     if (latest && (latest.Outcome === 'unknown' || latest.Outcome === 'pending')) {
-      const stamp = new Date(latest.UpdatedAt || latest.CreatedAt).getTime();
-      const stillOnDevice = latest.Outcome === 'pending' && Date.now() - stamp < 200000;
-      const paired = getPcPosPublicSettings().paired;
-      return res.status(409).json({
-        message: stillOnDevice
-          ? 'پرداخت این پرونده همین حالا روی دستگاه در حال انجام است'
-          : paired
-            ? 'نتیجه ارسال قبلی نامعلوم است. خرید را دوباره نفرستید و استعلام بگیرید'
-            : 'ارسال قبلی به کارتخوان نرسیده یا نتیجه‌اش نامعلوم است. اول دستگاه را جفت کنید، بعد استعلام بگیرید',
-        outcome: stillOnDevice ? 'pending' : 'unknown',
-        shouldInquiry: !stillOnDevice,
-        shouldRetry: false,
-        needsPairing: !paired && !stillOnDevice,
-        transactionId: latest.Id,
-        amount
-      });
+      const stale = await releaseStalePurchase(latest);
+      if (stale.active) {
+        return res.status(409).json({
+          message: 'پرداخت این پرونده همین حالا روی کارتخوان باز است. همان خرید را تمام یا لغو کنید',
+          outcome: 'pending',
+          shouldInquiry: false,
+          shouldRetry: false,
+          transactionId: latest.Id,
+          amount
+        });
+      }
+      if (stale.accepted) {
+        return res.json({
+          message: 'قفل این پرونده برداشته شد چون کارتخوان خریدی باز ندارد. اگر رسیدی چاپ نشده، یک بار دیگر پرداخت را بزنید.',
+          outcome: 'failed',
+          shouldInquiry: false,
+          shouldRetry: true,
+          transactionId: latest.Id,
+          amount
+        });
+      }
     }
 
     const result = await purchase({
