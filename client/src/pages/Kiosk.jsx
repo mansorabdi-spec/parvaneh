@@ -186,7 +186,9 @@ export default function Kiosk() {
     const started = Date.now()
     while (Date.now() - started < 240000) {
       try {
-        const res = await fetch(`/api/kiosk/pos/transactions/${transactionId}?nationalCode=${encodeURIComponent(nationalCode)}`)
+        const res = await fetch(`/api/kiosk/pos/transactions/${transactionId}?nationalCode=${encodeURIComponent(nationalCode)}`, {
+          signal: AbortSignal.timeout(5000)
+        })
         const data = await res.json().catch(() => ({}))
         if (data.outcome && data.outcome !== 'pending') {
           await applyPosResult(item, data)

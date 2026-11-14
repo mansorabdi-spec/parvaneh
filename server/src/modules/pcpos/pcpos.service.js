@@ -325,18 +325,40 @@ function sleep(ms) {
 
 const PRINT_NOT_REQUIRED = 'پرداخت انجام شد اما رسید چاپ نشد';
 
+const CUSTOMER_SCREEN = new Set([
+  'input',
+  'confirmation',
+  'card_presentation',
+  'application_selection',
+  'pin_entry',
+]);
+
 async function watchPaymentScreen(config, stopped) {
   const timeline = [];
+  const started = Date.now();
+  let holdSince = started;
   while (!stopped()) {
     await sleep(1500);
     if (stopped()) return null;
-    const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 4000 });
+    const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 2500 });
     if (stopped()) return null;
     const status = readStatus(transport);
-    if (status.kind !== 'state') continue;
-    timeline.push({ state: status.state, at: Date.now() });
-    console.log(`[pcpos] device state=${status.state}`);
-    if (displayedPaymentReady(timeline)) return { state: status.state };
+    const preview = String(transport.body || transport.message || '').replace(/\s+/g, ' ').slice(0, 100);
+    console.log(`[pcpos] status kind=${status.kind} state=${status.state || '-'} http=${transport.httpStatus || '-'} ${preview}`);
+    if (status.kind === 'state') {
+      timeline.push({ state: status.state, at: Date.now() });
+      if (displayedPaymentReady(timeline)) return { state: status.state };
+      const sawPayment = timeline.some((item) => item.state !== 'idle');
+      if (status.state === 'idle' && sawPayment) return { state: 'idle' };
+      if (CUSTOMER_SCREEN.has(status.state) || status.state === 'idle') {
+        holdSince = null;
+        continue;
+      }
+    }
+    if (holdSince == null) holdSince = Date.now();
+    if (Date.now() - holdSince >= 30000 && Date.now() - started >= 30000) {
+      return { state: status.state || 'result' };
+    }
   }
   return null;
 }
@@ -414,7 +436,8 @@ export async function startPurchase(input) {
       target: endpoint(config),
     };
     try {
-      const buyTask = postFrame(requestFrame, config);
+      const buyAbort = new AbortController();
+      const buyTask = postFrame(requestFrame, config, { signal: buyAbort.signal });
       let stopWatch = false;
       const screenTask = watchPaymentScreen(config, () => stopWatch);
       let first;
@@ -432,7 +455,7 @@ export async function startPurchase(input) {
         console.log(`[pcpos] result is on the display (${first.screen.state}); the receipt is not required`);
         transport = await Promise.race([
           buyTask,
-          sleep(5000).then(() => null),
+          sleep(2000).then(() => null),
         ]);
       }
       if (!transport && first.source === 'screen' && !first.screen) {
@@ -452,6 +475,7 @@ export async function startPurchase(input) {
         responseCode: '000',
       });
       console.log(`[pcpos] purchase messageId=${messageId} outcome=success code=000 receipt=not-printed`);
+      buyAbort.abort();
       buyTask.then(async (late) => {
         if (!late || late.transportError || late.httpStatus !== 200) return;
         const interpreted = interpretPosResponse(parsePosPayload(late.body), expect);
