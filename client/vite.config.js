@@ -13,8 +13,8 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_API_BASE_URL || 'http://localhost:4001',
           changeOrigin: true,
           secure: false,
-          timeout: 240000,
-          proxyTimeout: 240000
+          timeout: 300000,
+          proxyTimeout: 300000
         },
         '/health': {
           target: env.VITE_API_BASE_URL || 'http://localhost:4001',

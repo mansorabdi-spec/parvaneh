@@ -28,7 +28,7 @@ async function postPos(path, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(210000)
+    signal: AbortSignal.timeout(270000)
   })
   const data = await res.json().catch(() => ({}))
   return { ok: res.ok, status: res.status, data }
@@ -175,7 +175,7 @@ export default function Kiosk() {
     setPosStatus({
       requestId: item.requestId,
       tone: data.outcome === 'unknown' || data.shouldInquiry ? 'warn' : 'error',
-      text: data.message || 'پرداخت انجام نشد',
+      text: data.message || 'کارتخوان هنوز نتیجهٔ پرداخت را نفرستاده است',
       transactionId: data.transactionId || null,
       shouldInquiry: Boolean(data.shouldInquiry),
       shouldRetry: data.shouldRetry !== false && data.outcome !== 'unknown'
@@ -189,7 +189,7 @@ export default function Kiosk() {
     setPosStatus({
       requestId: item.requestId,
       tone: 'wait',
-      text: `در حال فرستادن مبلغ ${formatAmount(item.payableAmount)} ریال. اگر مبلغ روی کارتخوان آمد، کارت را بکشید و رمز را وارد کنید.`,
+      text: `مبلغ ${formatAmount(item.payableAmount)} ریال به کارتخوان ارسال شد. کارت را بکشید و رمز را وارد کنید. تا پایان کار روی دستگاه همین صفحه می‌ماند.`,
       shouldInquiry: false,
       shouldRetry: false
     })

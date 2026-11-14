@@ -54,10 +54,6 @@ export function paymentInProgress(requestId) {
   return String(activeRequestId) === String(requestId);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function endpoint(config, path = '/api/v1') {
   return `http://${config.host}:${config.port}${path}`;
 }
@@ -273,75 +269,6 @@ function readStatus(transport) {
   return { kind: 'other', body: transport.body };
 }
 
-async function watchDevice(config, buyPromise, getBuy) {
-  const race = (ms) => Promise.race([
-    buyPromise.then((transport) => ({ done: true, transport })),
-    sleep(ms).then(() => ({ done: false })),
-  ]);
-
-  let raced = await race(3000);
-  if (raced.done || getBuy()) return { transport: raced.transport || getBuy() };
-
-  let status = readStatus(await postFrame(buildStatusFrame(), config, { timeoutMs: 8000 }));
-  if (getBuy()) return { transport: getBuy() };
-  if (status.kind === 'unauthorized') {
-    return {
-      abort: true,
-      override: {
-        needsPairing: true,
-        outcome: 'failed',
-        shouldRetry: false,
-        shouldInquiry: false,
-        responseFrame: status.body,
-        message: 'کارتخوان این برنامه را نمی‌شناسد. دوباره کد جفت‌سازی را وارد کنید. مبلغی ارسال نشده است.',
-      },
-    };
-  }
-  if (status.kind === 'state' && status.live) return { deviceAccepted: true };
-  if (status.kind === 'unreachable') {
-    return {
-      abort: true,
-      override: {
-        outcome: 'failed',
-        shouldRetry: true,
-        shouldInquiry: false,
-        message: portHint(config, 'کارتخوان به درخواست خرید جواب نداد و مبلغ را نشان نداد.'),
-      },
-    };
-  }
-
-  raced = await race(5000);
-  if (raced.done || getBuy()) return { transport: raced.transport || getBuy() };
-  status = readStatus(await postFrame(buildStatusFrame(), config, { timeoutMs: 8000 }));
-  if (getBuy()) return { transport: getBuy() };
-  if (status.kind === 'state' && status.live) return { deviceAccepted: true };
-  if (status.kind === 'unauthorized') {
-    return {
-      abort: true,
-      override: {
-        needsPairing: true,
-        outcome: 'failed',
-        shouldRetry: false,
-        shouldInquiry: false,
-        message: 'کارتخوان این برنامه را نمی‌شناسد. دوباره کد جفت‌سازی را وارد کنید. مبلغی ارسال نشده است.',
-      },
-    };
-  }
-  const busy = status.kind === 'busy' || status.state === 'busy';
-  return {
-    abort: true,
-    override: {
-      outcome: 'failed',
-      shouldRetry: true,
-      shouldInquiry: false,
-      responseFrame: status.body,
-      message: busy
-        ? 'کارتخوان مشغول بود و مبلغ این خرید را نشان نداد. صفحهٔ اصلی دستگاه را باز کنید و دوباره تلاش کنید.'
-        : 'دستگاه مبلغ را نشان نداد و خریدی شروع نکرد. می‌توانید دوباره تلاش کنید. پورت HTTP را از تنظیمات PC-POS خود کارتخوان بردارید؛ نمونهٔ راهنمای شرکت ۱۷۰۰۰ است.',
-    },
-  };
-}
-
 function logResult(kind, messageId, result) {
   console.log(`[pcpos] ${kind} messageId=${messageId} outcome=${result.outcome} code=${result.responseCode || '-'}`);
 }
@@ -387,25 +314,16 @@ export async function purchase(input) {
       outcome: 'pending',
       requestId: input.requestId ?? null,
     });
-    const buyAbort = new AbortController();
-    let buyTransport = null;
-    const buyPromise = postFrame(requestFrame, config, { signal: buyAbort.signal }).then((transport) => {
-      buyTransport = transport;
-      return transport;
+    await updateTransaction(transactionId, {
+      outcome: 'pending',
+      deviceAccepted: true,
+      errorMessage: 'منتظر پایان کار روی کارتخوان',
     });
-    const probe = await watchDevice(config, buyPromise, () => buyTransport);
-    if (probe.deviceAccepted) {
-      await updateTransaction(transactionId, { outcome: 'pending', deviceAccepted: true });
-    }
-    if (probe.abort) buyAbort.abort();
-    const transport = probe.transport || await buyPromise;
-    const answerArrived = probe.override && transport && !transport.transportError && transport.httpStatus === 200;
-    const result = probe.override && !answerArrived
-      ? await applyDecision(transactionId, probe.override)
-      : await settle(transactionId, transport, {
-        expectedType: 'POSBUY',
-        expectedMessageId: messageId,
-      }, { deviceAccepted: Boolean(probe.deviceAccepted) });
+    const transport = await postFrame(requestFrame, config);
+    const result = await settle(transactionId, transport, {
+      expectedType: 'POSBUY',
+      expectedMessageId: messageId,
+    }, { deviceAccepted: !transport.unreachable });
     logResult('purchase', messageId, result);
     return publicResult(result, {
       transactionId,

@@ -2,9 +2,10 @@ import { PcPosError } from './pcpos.protocol.js';
 import { clearToken, readSession, writeSession } from './pcpos.session.js';
 
 function readTimeout() {
-  const requested = Number(process.env.PCPOS_TIMEOUT_MS ?? 170000);
-  if (!Number.isFinite(requested)) return 170000;
-  return Math.min(200000, Math.max(60000, Math.trunc(requested)));
+  const requested = Number(process.env.PCPOS_TIMEOUT_MS ?? 180000);
+  if (!Number.isFinite(requested)) return 180000;
+  // The terminal keeps the HTTP response open until the customer finishes on the device.
+  return Math.min(240000, Math.max(180000, Math.trunc(requested)));
 }
 
 function readPort(value) {
