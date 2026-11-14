@@ -25,6 +25,9 @@ import companyRouter from './modules/company.js';
 import printlogRouter from './printlog.js';
 import licenseHistoryRouter from './licensehistory.js';
 import plateServiceRouter from './plateService.js';
+import siteSettingsRouter from './modules/siteSettings.js';
+import kioskRouter from './modules/kiosk.js';
+import pcposRouter from '../modules/pcpos/pcpos.routes.js';
 
 const router = Router();
 
@@ -54,5 +57,8 @@ router.use('/company', companyRouter);
 router.use('/printlog', printlogRouter);
 router.use('/license-history', licenseHistoryRouter);
 router.use('/plate-service', plateServiceRouter);
+router.use('/site-settings', siteSettingsRouter);
+router.use('/kiosk', kioskRouter);
+router.use('/', pcposRouter);
 
 export default router;

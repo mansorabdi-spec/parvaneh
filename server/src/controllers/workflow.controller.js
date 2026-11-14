@@ -1,7 +1,8 @@
 import Joi from 'joi';
 import { getPool, sql } from '../lib/db.js';
 import { logLicenseHistory, calculateExpiryDate } from '../utils/licenseHistoryLogger.js';
-import { getCurrentShamsiDate, addOneYearShamsi, shamsiToGregorian } from '../utils/shamsiDateUtils.js';
+import { logLicenseRenewal } from '../utils/licenseRenewalLogger.js';
+import { getCurrentShamsiDate, addOneYearShamsi, shamsiToGregorian, gregorianToShamsi } from '../utils/shamsiDateUtils.js';
 
 // Public endpoint to verify license by tracking number (no authentication required)
 export async function verifyLicenseByTracking(req, res, next) {
@@ -168,25 +169,18 @@ export async function getMyInbox(req, res, next) {
     
     // Query 1: Workflow tasks assigned to current role
     // Show each request only at its current pending step (minimum StepOrder among Pending steps)
+    // Using subquery instead of CTE and WITHOUT NOLOCK hints to avoid SQL Server syntax issues
     const workflowQuery = `
-      WITH PendingSteps AS (
-        SELECT
-          RequestID,
-          MIN(StepOrder) AS MinPendingStep
-        FROM RequestWorkflowSteps WITH (NOLOCK)
-        WHERE Status = 'Pending'
-        GROUP BY RequestID
-      )
       SELECT
         rws.Id AS WorkflowStepId,
         rws.RequestID,
         rws.StepOrder,
         rws.RoleName,
-        rws.Status AS StepStatus,
+        rws.[Status] AS StepStatus,
         rws.Notes AS StepNotes,
         rws.CreatedAt AS AssignedAt,
         vr.TrackingNo,
-        vr.Status AS RequestStatus,
+        vr.[Status] AS RequestStatus,
         vr.CreatedAt AS RequestCreatedAt,
         vr.SubmittedByUserId,
         vr.HasDeficiency,
@@ -204,27 +198,45 @@ export async function getMyInbox(req, res, next) {
         COALESCE(p.FirstName, '') AS FirstName,
         COALESCE(p.LastName, ci.CompanyName, '') AS LastName,
         COALESCE(vr.CompanyNationalId, vr.NationalCode, v.RegistrarNationalCode) AS NationalCode,
+        lh.ExpiryDate,
         'workflow' AS SourceType,
         CASE 
           WHEN EXISTS (
-            SELECT 1 FROM OnlinePayment op WITH (NOLOCK) 
+            SELECT 1 FROM OnlinePayment op
             WHERE op.RequestID = vr.RequestID AND op.PayedBit = 1
           ) THEN 1
           WHEN EXISTS (
-            SELECT 1 FROM OfflinePayment ofp WITH (NOLOCK) 
+            SELECT 1 FROM OfflinePayment ofp
             WHERE ofp.RequestID = vr.RequestID
           ) THEN 1
           ELSE 0
         END AS HasSuccessfulPayment
-      FROM RequestWorkflowSteps rws WITH (NOLOCK)
-      INNER JOIN VehicleRequests vr WITH (NOLOCK) ON rws.RequestID = vr.RequestID
-      INNER JOIN PendingSteps ps ON rws.RequestID = ps.RequestID AND rws.StepOrder = ps.MinPendingStep
-      LEFT JOIN Vehicles v WITH (NOLOCK) ON vr.VehicleID = v.VehicleID
-      LEFT JOIN Persons p WITH (NOLOCK) ON vr.NationalCode = p.NationalCode
-      LEFT JOIN CompanyInfo ci WITH (NOLOCK) ON vr.CompanyNationalId = ci.NationalId
-      LEFT JOIN LookupValue lt WITH (NOLOCK) ON vr.LicenseTypeId = lt.Id
-      LEFT JOIN LookupValue ot WITH (NOLOCK) ON vr.OperationTypeId = ot.Id
-      WHERE rws.Status = 'Pending'
+      FROM RequestWorkflowSteps rws
+      INNER JOIN VehicleRequests vr ON rws.RequestID = vr.RequestID
+      INNER JOIN (
+        SELECT
+          RequestID,
+          MIN(StepOrder) AS MinPendingStep
+        FROM RequestWorkflowSteps
+        WHERE [Status] = 'Pending'
+        GROUP BY RequestID
+      ) ps ON rws.RequestID = ps.RequestID AND rws.StepOrder = ps.MinPendingStep
+      LEFT JOIN Vehicles v ON vr.VehicleID = v.VehicleID
+      LEFT JOIN Persons p ON vr.NationalCode = p.NationalCode
+      LEFT JOIN CompanyInfo ci ON vr.CompanyNationalId = ci.NationalId
+      LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
+      LEFT JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
+      LEFT JOIN (
+        SELECT lh1.*
+        FROM LicenseHistory lh1
+        INNER JOIN (
+          SELECT TrackingNo, MAX(CreatedAt) AS MaxCreatedAt
+          FROM LicenseHistory
+          WHERE [Status] = 'Active'
+          GROUP BY TrackingNo
+        ) lh2 ON lh1.TrackingNo = lh2.TrackingNo AND lh1.CreatedAt = lh2.MaxCreatedAt
+      ) lh ON vr.TrackingNo = lh.TrackingNo
+      WHERE rws.[Status] = 'Pending'
         AND LTRIM(RTRIM(rws.RoleName)) = LTRIM(RTRIM(@CurrentRole))
         AND (rws.AssignedUserId IS NULL OR rws.AssignedUserId = @UserId)
         AND NOT (vr.HasDeficiency = 1 AND vr.DeficiencySenderStepOrder = rws.StepOrder)
@@ -242,12 +254,14 @@ export async function getMyInbox(req, res, next) {
     try {
       const workflowResult = await workflowRequest.query(workflowQuery);
       workflowTasks = workflowResult.recordset || [];
+      console.log(`✅ Workflow query returned ${workflowTasks.length} results for role: ${currentRole}`);
     } catch (err) {
-      console.error('⚠️ Workflow query timeout, skipping workflow tasks:', err.message);
-      // Continue without workflow tasks if timeout occurs
+      console.error('⚠️ Workflow query error:', err.message);
+      // Continue without workflow tasks if error occurs
     }
     
     // Query 2: User's own submitted requests (increased limit to show all user requests)
+    // Using subquery instead of CTE to avoid SQL Server syntax issues
     const myRequestsQuery = `
       SELECT 
         NULL AS WorkflowStepId,
@@ -258,7 +272,7 @@ export async function getMyInbox(req, res, next) {
         NULL AS StepNotes,
         vr.CreatedAt AS AssignedAt,
         vr.TrackingNo,
-        vr.Status AS RequestStatus,
+        vr.[Status] AS RequestStatus,
         vr.CreatedAt AS RequestCreatedAt,
         vr.SubmittedByUserId,
         vr.HasDeficiency,
@@ -276,6 +290,7 @@ export async function getMyInbox(req, res, next) {
         COALESCE(p.FirstName, '') AS FirstName,
         COALESCE(p.LastName, ci.CompanyName, '') AS LastName,
         COALESCE(vr.CompanyNationalId, vr.NationalCode, v.RegistrarNationalCode) AS NationalCode,
+        lh.ExpiryDate,
         'my_request' AS SourceType,
         CASE 
           WHEN EXISTS (
@@ -294,6 +309,12 @@ export async function getMyInbox(req, res, next) {
       LEFT JOIN CompanyInfo ci WITH (NOLOCK) ON vr.CompanyNationalId = ci.NationalId
       LEFT JOIN LookupValue lt WITH (NOLOCK) ON vr.LicenseTypeId = lt.Id
       LEFT JOIN LookupValue ot WITH (NOLOCK) ON vr.OperationTypeId = ot.Id
+      LEFT JOIN (
+        SELECT lh1.*,
+          ROW_NUMBER() OVER (PARTITION BY lh1.TrackingNo ORDER BY lh1.CreatedAt DESC, lh1.HistoryID DESC) AS rn
+        FROM LicenseHistory lh1 WITH (NOLOCK)
+        WHERE lh1.[Status] = 'Active'
+      ) lh ON vr.TrackingNo = lh.TrackingNo AND lh.rn = 1
       WHERE vr.SubmittedByUserId = @UserId
       ORDER BY vr.CreatedAt DESC
     `;
@@ -377,13 +398,75 @@ export async function getRequestDetail(req, res, next) {
           vr.*, 
           v.RegistrarNationalCode,
           lt.Name AS LicenseTypeName,
-          ot.Name AS OperationTypeName
+          ot.Name AS OperationTypeName,
+          (
+            SELECT TOP 1 lh.IssueDate
+            FROM LicenseHistory lh
+            WHERE lh.TrackingNo = vr.TrackingNo
+              AND NULLIF(LTRIM(RTRIM(lh.IssueDate)), N'') IS NOT NULL
+              AND (
+                lh.EventType = N'Issued'
+                OR (
+                  lh.OperationTypeName = N'صدور'
+                  AND ISNULL(lh.EventType, N'') NOT IN (N'Renewed', N'Revoked', N'Cancelled')
+                )
+              )
+            ORDER BY
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 3) AS INT) ASC,
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 2) AS INT) ASC,
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 1) AS INT) ASC,
+              lh.CreatedAt ASC,
+              lh.HistoryID ASC
+          ) AS FirstIssueDate,
+          (
+            SELECT TOP 1 COALESCE(orig.CompletedAt, orig.CreatedAt)
+            FROM VehicleRequests orig
+            INNER JOIN LookupValue otOrig ON orig.OperationTypeId = otOrig.Id
+            WHERE orig.TrackingNo = vr.TrackingNo
+              AND otOrig.Name = N'صدور'
+            ORDER BY orig.CreatedAt ASC, orig.RequestID ASC
+          ) AS FirstIssueAt,
+          (
+            SELECT TOP 1 lrh.RenewalDate
+            FROM LicenseRenewalHistory lrh
+            WHERE lrh.TrackingNo = vr.TrackingNo
+              AND NULLIF(LTRIM(RTRIM(lrh.RenewalDate)), N'') IS NOT NULL
+            ORDER BY
+              TRY_CAST(PARSENAME(REPLACE(lrh.RenewalDate, '/', '.'), 3) AS INT) DESC,
+              TRY_CAST(PARSENAME(REPLACE(lrh.RenewalDate, '/', '.'), 2) AS INT) DESC,
+              TRY_CAST(PARSENAME(REPLACE(lrh.RenewalDate, '/', '.'), 1) AS INT) DESC,
+              lrh.CreatedAt DESC,
+              lrh.Id DESC
+          ) AS RenewalDate,
+          (
+            SELECT TOP 1 lh.IssueDate
+            FROM LicenseHistory lh
+            WHERE lh.TrackingNo = vr.TrackingNo
+              AND NULLIF(LTRIM(RTRIM(lh.IssueDate)), N'') IS NOT NULL
+              AND (
+                lh.EventType = N'Renewed'
+                OR lh.OperationTypeName LIKE N'%تمدید%'
+              )
+            ORDER BY
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 3) AS INT) DESC,
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 2) AS INT) DESC,
+              TRY_CAST(PARSENAME(REPLACE(lh.IssueDate, '/', '.'), 1) AS INT) DESC,
+              lh.CreatedAt DESC,
+              lh.HistoryID DESC
+          ) AS HistoryRenewalDate,
+          (
+            SELECT COUNT(*)
+            FROM LicenseRenewalHistory lrh
+            WHERE lrh.RequestID = vr.RequestID
+          ) AS RenewalRecordCount
         FROM VehicleRequests vr
         LEFT JOIN Vehicles v ON vr.VehicleID = v.VehicleID
         LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
         LEFT JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
         WHERE vr.RequestID = @RequestID
       `);
+    
+    console.log(`🔍 Request ${requestId} query result:`, reqResult.recordset[0]);
     
     const request = reqResult.recordset[0];
     if (!request) return res.status(404).json({ message: 'Request not found' });
@@ -448,6 +531,34 @@ export async function getRequestDetail(req, res, next) {
       });
     }
     
+    // Company that supervised registration when the request was submitted by a broker (کارگزار)
+    let supervisorCompanyName = null;
+    if (request.SubmittedByUserId) {
+      const supervisorResult = await pool.request()
+        .input('SubmittedByUserId', sql.Int, request.SubmittedByUserId)
+        .input('BrokerRole', sql.NVarChar(50), 'کارگزار (بهره بردار)')
+        .query(`
+          SELECT TOP 1 ci.CompanyName
+          FROM Users u
+          INNER JOIN CompanyInfo ci
+            ON LTRIM(RTRIM(ci.ManagerNationalCode)) = LTRIM(RTRIM(u.NationalCode))
+          WHERE u.Id = @SubmittedByUserId
+            AND (
+              u.Role = @BrokerRole
+              OR EXISTS (
+                SELECT 1
+                FROM UserRoles ur
+                INNER JOIN Roles r ON r.Id = ur.RoleId
+                WHERE ur.UserId = u.Id AND r.Name = @BrokerRole
+              )
+            )
+            AND ci.CompanyName IS NOT NULL
+            AND LTRIM(RTRIM(ci.CompanyName)) <> N''
+          ORDER BY ci.CreatedAt DESC
+        `);
+      supervisorCompanyName = supervisorResult.recordset[0]?.CompanyName || null;
+    }
+
     // Build response based on permissions
     const response = {
       request: {
@@ -482,7 +593,21 @@ export async function getRequestDetail(req, res, next) {
         deficiencySenderUserId: request.DeficiencySenderUserId || null,
         // Tonnage (for exploitation licenses)
         tonnageFromTon: request.TonnageFromTon || null,
-        tonnageToTon: request.TonnageToTon || null
+        tonnageToTon: request.TonnageToTon || null,
+        // First issuance of this license, not the date of the request being printed.
+        // A tracking number can be renewed for many years.
+        issueDate: request.FirstIssueDate
+          || (request.FirstIssueAt ? gregorianToShamsi(new Date(request.FirstIssueAt)) : null),
+        // Latest renewal across every renewal of this tracking number.
+        renewalDate: request.RenewalDate
+          || request.HistoryRenewalDate
+          || (
+            request.OperationTypeName && String(request.OperationTypeName).includes('تمدید') && request.CompletedAt
+              ? gregorianToShamsi(new Date(request.CompletedAt))
+              : null
+          ),
+        // Company name printed as "تحت نظارت ..." when the registrar is a broker
+        supervisorCompanyName
       },
       permissions,
       person: null,
@@ -1172,15 +1297,18 @@ export async function makeDecision(req, res, next) {
           const isExploitationLicense = await new sql.Request(tx)
             .input('RequestID', sql.BigInt, step.RequestID)
             .query(`
-              SELECT LicenseTypeId, TrackingNo
-              FROM VehicleRequests
-              WHERE RequestID = @RequestID
+              SELECT vr.LicenseTypeId, vr.TrackingNo, ot.Name AS OperationTypeName
+              FROM VehicleRequests vr
+              LEFT JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
+              WHERE vr.RequestID = @RequestID
             `);
           
           const licenseTypeId = isExploitationLicense.recordset[0]?.LicenseTypeId;
           const trackingNo = isExploitationLicense.recordset[0]?.TrackingNo;
+          const operationTypeName = isExploitationLicense.recordset[0]?.OperationTypeName || '';
           // Check for exploitation license (format: 11YY-NNNN)
           const isExploitation = licenseTypeId === 68 || trackingNo?.startsWith('11');
+          const isRenewal = String(operationTypeName).includes('تمدید');
           
           // Debug logging
           console.log(`🔍 Checking if should pause for payment:`);
@@ -1191,8 +1319,10 @@ export async function makeDecision(req, res, next) {
           console.log(`   - RoleName: "${step.RoleName}"`);
           console.log(`   - RoleName length: ${step.RoleName?.length}`);
           
-          // Check if this is Step 2 (کارشناس تایید محل) for exploitation licenses
-          const shouldPauseForPayment = isExploitation && 
+          // Renewal follows the steps configured for تمدید پروانه بهره برداری
+          // and does not stop for payment after the location expert.
+          const shouldPauseForPayment = isExploitation &&
+                                        !isRenewal &&
                                         step.StepOrder === 2 && 
                                         step.RoleName === 'کارشناس تایید محل';
           
@@ -1280,8 +1410,17 @@ export async function makeDecision(req, res, next) {
       
       await tx.commit();
       
+      // Debug: Log workflow completion details
+      console.log(`📋 Workflow decision completed:`);
+      console.log(`   - RequestID: ${step.RequestID}`);
+      console.log(`   - RequestStatus: ${requestStatus}`);
+      console.log(`   - CompletedAt: ${completedAt}`);
+      console.log(`   - StepOrder: ${step.StepOrder}`);
+      console.log(`   - RoleName: ${step.RoleName}`);
+      
       // If license is approved, automatically log to license history
       if (requestStatus === 'Approved' && completedAt) {
+        console.log(`✅ Final approval detected - starting license logging process for RequestID: ${step.RequestID}`);
         try {
           // Get request details for license history
           const requestDetailsResult = await pool.request()
@@ -1321,6 +1460,40 @@ export async function makeDecision(req, res, next) {
             const validityMonths = 12;
             
             // Log license history
+            let licenseHistoryId = null;
+            try {
+              const licenseHistoryResult = await pool.request()
+                .input('RequestID', sql.BigInt, requestDetails.RequestID)
+                .query(`
+                  SELECT TOP 1 HistoryID FROM LicenseHistory 
+                  WHERE RequestID = @RequestID 
+                  ORDER BY CreatedAt DESC
+                `);
+              
+              licenseHistoryId = licenseHistoryResult.recordset[0]?.HistoryID;
+              console.log(`🔍 Found LicenseHistory record: HistoryID = ${licenseHistoryId} for RequestID = ${requestDetails.RequestID}`);
+            } catch (historyLookupError) {
+              console.error('⚠️ Failed to lookup LicenseHistory:', historyLookupError);
+            }
+            
+            // Fallback: Try to find by TrackingNo if RequestID didn't work
+            if (!licenseHistoryId && requestDetails.TrackingNo) {
+              try {
+                const licenseHistoryByTrackingResult = await pool.request()
+                  .input('TrackingNo', sql.NVarChar(30), requestDetails.TrackingNo)
+                  .query(`
+                    SELECT TOP 1 HistoryID FROM LicenseHistory 
+                    WHERE TrackingNo = @TrackingNo 
+                    ORDER BY CreatedAt DESC
+                  `);
+                
+                licenseHistoryId = licenseHistoryByTrackingResult.recordset[0]?.HistoryID;
+                console.log(`🔍 Fallback: Found LicenseHistory by TrackingNo: HistoryID = ${licenseHistoryId}`);
+              } catch (trackingLookupError) {
+                console.error('⚠️ Failed to lookup LicenseHistory by TrackingNo:', trackingLookupError);
+              }
+            }
+            
             await logLicenseHistory({
               requestId: requestDetails.RequestID,
               trackingNo: requestDetails.TrackingNo,
@@ -1348,6 +1521,25 @@ export async function makeDecision(req, res, next) {
             });
             
             console.log(`📝 License history logged for approved request ${requestDetails.TrackingNo}`);
+            
+            // If this is a renewal, also log to LicenseRenewalHistory
+            if (eventType === 'Renewed' && licenseHistoryId) {
+              try {
+                await logLicenseRenewal({
+                  trackingNo: requestDetails.TrackingNo,
+                  requestId: requestDetails.RequestID,
+                  licenseHistoryId: licenseHistoryId,
+                  renewalDate: issueDate,
+                  expiryDate: expiryDate,
+                  renewedByUserId: userId
+                });
+                
+                console.log(`📝 License renewal history logged for ${requestDetails.TrackingNo}`);
+              } catch (renewalError) {
+                console.error('⚠️ Failed to log license renewal:', renewalError);
+                // Don't fail the approval if renewal logging fails
+              }
+            }
           }
         } catch (historyError) {
           // Log error but don't fail the approval
@@ -1755,7 +1947,13 @@ export async function getAllRequests(req, res, next) {
       request.input('ApplicantName', sql.NVarChar, `%${filters.applicantName}%`);
     }
     if (filters.nationalCode) {
-      whereConditions.push('(vr.NationalCode LIKE @NationalCode OR vr.CompanyNationalId LIKE @NationalCode)');
+      whereConditions.push(`(
+        vr.NationalCode LIKE @NationalCode
+        OR vr.CompanyNationalId LIKE @NationalCode
+        OR srcIdent.NationalCode LIKE @NationalCode
+        OR srcIdent.CompanyNationalId LIKE @NationalCode
+        OR v.RegistrarNationalCode LIKE @NationalCode
+      )`);
       request.input('NationalCode', sql.NVarChar, `%${filters.nationalCode}%`);
     }
     if (filters.plateNumber) {
@@ -1814,14 +2012,67 @@ export async function getAllRequests(req, res, next) {
       SELECT COUNT(DISTINCT vr.RequestID) AS Total
       FROM VehicleRequests vr
       LEFT JOIN Vehicles v ON vr.VehicleID = v.VehicleID
-      LEFT JOIN Persons p ON vr.NationalCode = p.NationalCode
-      LEFT JOIN CompanyInfo ci ON vr.CompanyNationalId = ci.NationalId
+      -- Earliest request on this tracking number that actually stored the applicant.
+      -- Activity renewals are inserted without NationalCode/CompanyNationalId.
+      LEFT JOIN (
+        SELECT
+          TrackingNo,
+          NULLIF(LTRIM(RTRIM(NationalCode)), N'') AS NationalCode,
+          NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') AS CompanyNationalId
+        FROM (
+          SELECT
+            TrackingNo,
+            NationalCode,
+            CompanyNationalId,
+            ROW_NUMBER() OVER (
+              PARTITION BY TrackingNo
+              ORDER BY
+                CASE
+                  WHEN NULLIF(LTRIM(RTRIM(NationalCode)), N'') IS NOT NULL
+                    OR NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') IS NOT NULL
+                  THEN 0 ELSE 1
+                END,
+                CreatedAt ASC,
+                RequestID ASC
+            ) AS rn
+          FROM VehicleRequests
+          WHERE TrackingNo IS NOT NULL
+        ) rankedIdentity
+        WHERE rn = 1
+          AND (NationalCode IS NOT NULL OR CompanyNationalId IS NOT NULL)
+      ) srcIdent ON srcIdent.TrackingNo = vr.TrackingNo
+      LEFT JOIN Persons p ON p.NationalCode = COALESCE(
+        NULLIF(LTRIM(RTRIM(vr.NationalCode)), N''),
+        srcIdent.NationalCode,
+        CASE
+          WHEN COALESCE(NULLIF(LTRIM(RTRIM(vr.CompanyNationalId)), N''), srcIdent.CompanyNationalId) IS NULL
+          THEN NULLIF(LTRIM(RTRIM(v.RegistrarNationalCode)), N'')
+        END
+      )
+      LEFT JOIN CompanyInfo ci ON ci.NationalId = COALESCE(
+        NULLIF(LTRIM(RTRIM(vr.CompanyNationalId)), N''),
+        srcIdent.CompanyNationalId,
+        CASE
+          WHEN COALESCE(NULLIF(LTRIM(RTRIM(vr.NationalCode)), N''), srcIdent.NationalCode) IS NULL
+          THEN NULLIF(LTRIM(RTRIM(v.RegistrarNationalCode)), N'')
+        END
+      )
       LEFT JOIN Users u ON vr.SubmittedByUserId = u.Id
       LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
       LEFT JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
       LEFT JOIN (
         SELECT DISTINCT RequestID FROM LicensePrintLog
       ) lpl ON vr.RequestID = lpl.RequestID
+      LEFT JOIN (
+        SELECT lh1.*
+        FROM LicenseHistory lh1
+        INNER JOIN (
+          SELECT TrackingNo, MAX(CreatedAt) AS MaxCreatedAt
+          FROM LicenseHistory
+          WHERE [Status] = 'Active'
+          GROUP BY TrackingNo
+        ) lh2 ON lh1.TrackingNo = lh2.TrackingNo AND lh1.CreatedAt = lh2.MaxCreatedAt
+      ) lh ON vr.TrackingNo = lh.TrackingNo
       ${whereClause}
     `;
     
@@ -1856,19 +2107,35 @@ export async function getAllRequests(req, res, next) {
         p.LastName,
         -- Company details
         ci.CompanyName,
-        -- Get applicant name: prioritize company name, then person name
-        CASE 
-          WHEN ci.CompanyName IS NOT NULL THEN ci.CompanyName
-          WHEN p.FirstName IS NOT NULL AND p.LastName IS NOT NULL THEN p.FirstName + N' ' + p.LastName
+        -- Applicant: company name, then person. Renewal rows often have empty
+        -- NationalCode/CompanyNationalId; joins below fall back to the original
+        -- license (same tracking number) and the vehicle registrar.
+        CASE
+          WHEN NULLIF(LTRIM(RTRIM(ci.CompanyName)), N'') IS NOT NULL THEN ci.CompanyName
+          WHEN NULLIF(LTRIM(RTRIM(p.FirstName)), N'') IS NOT NULL
+               AND NULLIF(LTRIM(RTRIM(p.LastName)), N'') IS NOT NULL
+            THEN p.FirstName + N' ' + p.LastName
+          WHEN NULLIF(LTRIM(RTRIM(p.FirstName)), N'') IS NOT NULL THEN p.FirstName
+          WHEN NULLIF(LTRIM(RTRIM(p.LastName)), N'') IS NOT NULL THEN p.LastName
           ELSE N'-'
         END AS ApplicantName,
-        -- Get national code: for companies use CompanyNationalId, for individuals use NationalCode
-        COALESCE(vr.CompanyNationalId, vr.NationalCode, N'-') AS NationalCode,
+        -- Companies show شناسه ملی; individuals show کد ملی.
+        COALESCE(
+          NULLIF(LTRIM(RTRIM(vr.CompanyNationalId)), N''),
+          srcIdent.CompanyNationalId,
+          CASE WHEN NULLIF(LTRIM(RTRIM(ci.CompanyName)), N'') IS NOT NULL THEN NULLIF(LTRIM(RTRIM(ci.NationalId)), N'') END,
+          NULLIF(LTRIM(RTRIM(vr.NationalCode)), N''),
+          srcIdent.NationalCode,
+          NULLIF(LTRIM(RTRIM(p.NationalCode)), N''),
+          N'-'
+        ) AS NationalCode,
         u.FullName AS SubmittedByUserName,
         lt.Name AS LicenseTypeName,
         ot.Name AS OperationTypeName,
         -- Print status: check if license has been printed
         CASE WHEN lpl.RequestID IS NOT NULL THEN 1 ELSE 0 END AS IsPrinted,
+        -- Expiry date from LicenseHistory
+        lh.ExpiryDate,
         -- Payment status: check if request has successful online or offline payment
         CASE 
           WHEN EXISTS (
@@ -1883,14 +2150,67 @@ export async function getAllRequests(req, res, next) {
         END AS HasSuccessfulPayment
       FROM VehicleRequests vr
       LEFT JOIN Vehicles v ON vr.VehicleID = v.VehicleID
-      LEFT JOIN Persons p ON vr.NationalCode = p.NationalCode
-      LEFT JOIN CompanyInfo ci ON vr.CompanyNationalId = ci.NationalId
+      -- Earliest request on this tracking number that actually stored the applicant.
+      -- Activity renewals are inserted without NationalCode/CompanyNationalId.
+      LEFT JOIN (
+        SELECT
+          TrackingNo,
+          NULLIF(LTRIM(RTRIM(NationalCode)), N'') AS NationalCode,
+          NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') AS CompanyNationalId
+        FROM (
+          SELECT
+            TrackingNo,
+            NationalCode,
+            CompanyNationalId,
+            ROW_NUMBER() OVER (
+              PARTITION BY TrackingNo
+              ORDER BY
+                CASE
+                  WHEN NULLIF(LTRIM(RTRIM(NationalCode)), N'') IS NOT NULL
+                    OR NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') IS NOT NULL
+                  THEN 0 ELSE 1
+                END,
+                CreatedAt ASC,
+                RequestID ASC
+            ) AS rn
+          FROM VehicleRequests
+          WHERE TrackingNo IS NOT NULL
+        ) rankedIdentity
+        WHERE rn = 1
+          AND (NationalCode IS NOT NULL OR CompanyNationalId IS NOT NULL)
+      ) srcIdent ON srcIdent.TrackingNo = vr.TrackingNo
+      LEFT JOIN Persons p ON p.NationalCode = COALESCE(
+        NULLIF(LTRIM(RTRIM(vr.NationalCode)), N''),
+        srcIdent.NationalCode,
+        CASE
+          WHEN COALESCE(NULLIF(LTRIM(RTRIM(vr.CompanyNationalId)), N''), srcIdent.CompanyNationalId) IS NULL
+          THEN NULLIF(LTRIM(RTRIM(v.RegistrarNationalCode)), N'')
+        END
+      )
+      LEFT JOIN CompanyInfo ci ON ci.NationalId = COALESCE(
+        NULLIF(LTRIM(RTRIM(vr.CompanyNationalId)), N''),
+        srcIdent.CompanyNationalId,
+        CASE
+          WHEN COALESCE(NULLIF(LTRIM(RTRIM(vr.NationalCode)), N''), srcIdent.NationalCode) IS NULL
+          THEN NULLIF(LTRIM(RTRIM(v.RegistrarNationalCode)), N'')
+        END
+      )
       LEFT JOIN Users u ON vr.SubmittedByUserId = u.Id
       LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
       LEFT JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
       LEFT JOIN (
         SELECT DISTINCT RequestID FROM LicensePrintLog
       ) lpl ON vr.RequestID = lpl.RequestID
+      LEFT JOIN (
+        SELECT lh1.*
+        FROM LicenseHistory lh1
+        INNER JOIN (
+          SELECT TrackingNo, MAX(CreatedAt) AS MaxCreatedAt
+          FROM LicenseHistory
+          WHERE [Status] = 'Active'
+          GROUP BY TrackingNo
+        ) lh2 ON lh1.TrackingNo = lh2.TrackingNo AND lh1.CreatedAt = lh2.MaxCreatedAt
+      ) lh ON vr.TrackingNo = lh.TrackingNo
       ${whereClause}
       ORDER BY vr.CreatedAt DESC
       OFFSET @Offset ROWS
@@ -1933,6 +2253,32 @@ export async function updateRequest(req, res, next) {
     const requestId = Number(req.params.requestId);
     const userId = req.user.id;
     
+    // Get user's roles to check for superadmin
+    const pool = await getPool();
+    const rolesResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT DISTINCT r.Name AS RoleName
+        FROM (
+          SELECT @userId AS UserId, (SELECT Role FROM Users WHERE Id=@userId) AS RoleName
+          UNION ALL
+          SELECT ur.UserId, r.Name FROM UserRoles ur JOIN Roles r ON r.Id = ur.RoleId WHERE ur.UserId = @userId
+        ) x
+        JOIN Roles r ON r.Name = x.RoleName
+      `);
+    
+    const userRoles = rolesResult.recordset.map(r => r.RoleName);
+    const hasAdmin = userRoles.includes('Admin');
+    const hasDeputyAdmin = userRoles.includes('superadmin');
+    
+    // Check if user has permission to edit requests
+    if (!hasAdmin && !hasDeputyAdmin) {
+      return res.status(403).json({ 
+        message: 'شما اجازه ویرایش این درخواست را ندارید',
+        error: 'Access denied: You do not have permission to edit this request'
+      });
+    }
+    
     if (!requestId) return res.status(400).json({ message: 'Missing requestId' });
     
     const { error, value } = updateRequestSchema.validate(req.body);
@@ -1940,7 +2286,6 @@ export async function updateRequest(req, res, next) {
     
     const { finalDescription, paymentInfo } = value;
     
-    const pool = await getPool();
     const tx = new sql.Transaction(pool);
     await tx.begin();
     
@@ -2217,25 +2562,41 @@ export async function notifyRequestChanges(req, res, next) {
   }
 }
 
-// Delete a request (Admin only)
+// Delete a request (Admin and superadmin)
 export async function deleteRequest(req, res, next) {
   try {
     const requestId = Number(req.params.requestId);
     const userId = req.user.id;
     const userRole = req.user.role;
     
+    // Get user's roles to check for superadmin
+    const pool = await getPool();
+    const rolesResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT DISTINCT r.Name AS RoleName
+        FROM (
+          SELECT @userId AS UserId, (SELECT Role FROM Users WHERE Id=@userId) AS RoleName
+          UNION ALL
+          SELECT ur.UserId, r.Name FROM UserRoles ur JOIN Roles r ON r.Id = ur.RoleId WHERE ur.UserId = @userId
+        ) x
+        JOIN Roles r ON r.Name = x.RoleName
+      `);
+    
+    const userRoles = rolesResult.recordset.map(r => r.RoleName);
+    const hasAdmin = userRoles.includes('Admin');
+    const hasDeputyAdmin = userRoles.includes('superadmin');
+    
     if (!requestId) {
       return res.status(400).json({ message: 'شناسه درخواست الزامی است' });
     }
     
-    // Only Admin can delete requests
-    if (userRole !== 'Admin') {
-      return res.status(403).json({ message: 'فقط مدیر سیستم می‌تواند پرونده را حذف کند' });
+    // Admin and superadmin can delete requests
+    if (!hasAdmin && !hasDeputyAdmin) {
+      return res.status(403).json({ message: 'فقط مدیر سیستم و superadmin می‌توانند پرونده را حذف کنند' });
     }
     
     console.log(`🗑️ Admin user ${userId} attempting to delete request ${requestId}`);
-    
-    const pool = await getPool();
     
     // Check if request exists
     const checkResult = await pool.request()
@@ -2625,12 +2986,30 @@ export async function getDeficiencyStatus(req, res, next) {
   try {
     const requestId = Number(req.params.requestId);
     const userId = req.user.id;
+    const userRole = req.user.role;
     
     if (!requestId) {
       return res.status(400).json({ message: 'Missing requestId' });
     }
     
     const pool = await getPool();
+    
+    // Get user's roles to check for superadmin
+    const rolesResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT DISTINCT r.Name AS RoleName
+        FROM (
+          SELECT @userId AS UserId, (SELECT Role FROM Users WHERE Id=@userId) AS RoleName
+          UNION ALL
+          SELECT ur.UserId, r.Name FROM UserRoles ur JOIN Roles r ON r.Id = ur.RoleId WHERE ur.UserId = @userId
+        ) x
+        JOIN Roles r ON r.Name = x.RoleName
+      `);
+    
+    const userRoles = rolesResult.recordset.map(r => r.RoleName);
+    const hasAdmin = userRoles.includes('Admin');
+    const hasDeputyAdmin = userRoles.includes('superadmin');
     
     // Get the request and check if user is the owner
     const requestResult = await pool.request()
@@ -2652,8 +3031,9 @@ export async function getDeficiencyStatus(req, res, next) {
     
     const request = requestResult.recordset[0];
     
-    // Check if user is the owner of the request
-    if (request.SubmittedByUserId !== userId) {
+    // Admin and superadmin can view any request's deficiency status
+    // Regular users can only view their own requests
+    if (!hasAdmin && !hasDeputyAdmin && request.SubmittedByUserId !== userId) {
       return res.status(403).json({ message: 'You do not have permission to view this request' });
     }
     

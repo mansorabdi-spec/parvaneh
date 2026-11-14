@@ -13,7 +13,7 @@ export async function getFlow(req, res, next) {
 }
 
 const flowSchema = Joi.object({
-  licenseType: Joi.string().valid('Activity', 'Employment', 'Exploitation').required(),
+  licenseType: Joi.string().valid('Activity', 'Employment', 'Exploitation', 'Activity_Renewal', 'Employment_Renewal', 'Exploitation_Renewal').required(),
   steps: Joi.array().items(Joi.object({
     stepOrder: Joi.number().integer().min(1).required(),
     roleName: Joi.string().min(2).max(50).required()

@@ -280,6 +280,7 @@ export async function upsertCompany(req, res, next) {
       businessLicenseValidFrom,
       businessLicenseValidTo,
       parentCompanyId,
+      managerNationalCode,
       addresses,
       contacts
     } = req.body;
@@ -342,6 +343,7 @@ export async function upsertCompany(req, res, next) {
         .input('BusinessLicenseValidFrom', sql.NVarChar(50), businessLicenseValidFrom || null)
         .input('BusinessLicenseValidTo', sql.NVarChar(50), businessLicenseValidTo || null)
         .input('ParentCompanyId', sql.Int, parentCompanyId || null)
+        .input('ManagerNationalCode', sql.NVarChar(20), managerNationalCode || null)
         .query(`
           UPDATE CompanyInfo
           SET 
@@ -359,11 +361,16 @@ export async function upsertCompany(req, res, next) {
             BusinessLicenseValidFrom = @BusinessLicenseValidFrom,
             BusinessLicenseValidTo = @BusinessLicenseValidTo,
             ParentCompanyId = @ParentCompanyId,
+            ManagerNationalCode = ISNULL(@ManagerNationalCode, ManagerNationalCode),
             UpdatedAt = SYSUTCDATETIME()
           WHERE NationalId = @NationalId
         `);
     } else {
-      // Insert new company
+      // Insert new company - ManagerNationalCode is required and must not be empty
+      if (!managerNationalCode || !String(managerNationalCode).trim()) {
+        return res.status(400).json({ message: 'کد ملی مدیر شرکت الزامی است' });
+      }
+
       await pool.request()
         .input('NationalId', sql.NVarChar(100), nationalId.trim())
         .input('NationalCode', sql.NVarChar(50), nationalCode.trim())
@@ -380,18 +387,19 @@ export async function upsertCompany(req, res, next) {
         .input('BusinessLicenseValidFrom', sql.NVarChar(50), businessLicenseValidFrom || null)
         .input('BusinessLicenseValidTo', sql.NVarChar(50), businessLicenseValidTo || null)
         .input('ParentCompanyId', sql.Int, parentCompanyId || null)
+        .input('ManagerNationalCode', sql.NVarChar(20), String(managerNationalCode).trim())
         .query(`
           INSERT INTO CompanyInfo (
             NationalId, NationalCode, RegistrationNo, CompanyTypeId, CompanyName,
             WorkshopName, BusinessLicenseNo, EconomicCode, MainActivity,
             ActivityFieldId, TonnageRateId, RegistrationDate, BusinessLicenseValidFrom,
-            BusinessLicenseValidTo, ParentCompanyId
+            BusinessLicenseValidTo, ParentCompanyId, ManagerNationalCode
           )
           VALUES (
             @NationalId, @NationalCode, @RegistrationNo, @CompanyTypeId, @CompanyName,
             @WorkshopName, @BusinessLicenseNo, @EconomicCode, @MainActivity,
             @ActivityFieldId, @TonnageRateId, @RegistrationDate, @BusinessLicenseValidFrom,
-            @BusinessLicenseValidTo, @ParentCompanyId
+            @BusinessLicenseValidTo, @ParentCompanyId, @ManagerNationalCode
           )
         `);
     }

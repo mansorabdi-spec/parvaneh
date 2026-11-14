@@ -226,3 +226,40 @@ export async function deleteValue(req, res, next) {
     res.json({ success: true });
   } catch (e) { next(e); }
 }
+
+export const RENEWAL_WINDOW_CATEGORY_KEY = 'RenewalWindowDays';
+export const DEFAULT_RENEWAL_WINDOW_DAYS = 10;
+
+export async function ensureRenewalWindowLookup() {
+  const pool = await getPool();
+  const existing = await pool.request()
+    .input('Key', sql.NVarChar(100), RENEWAL_WINDOW_CATEGORY_KEY)
+    .query('SELECT Id FROM LookupCategory WHERE [Key]=@Key');
+
+  let categoryId = existing.recordset[0]?.Id;
+  if (!categoryId) {
+    const inserted = await pool.request()
+      .input('Key', sql.NVarChar(100), RENEWAL_WINDOW_CATEGORY_KEY)
+      .input('Name', sql.NVarChar(200), 'مهلت تمدید پروانه')
+      .input('Description', sql.NVarChar(500), 'تعداد روز مانده تا انقضای پروانه که دکمه تمدید فعال می‌شود')
+      .input('SortOrder', sql.Int, 200)
+      .query(`INSERT INTO LookupCategory([Key],[Name],[Description],IsActive,SortOrder)
+              OUTPUT INSERTED.Id
+              VALUES(@Key,@Name,@Description,1,@SortOrder)`);
+    categoryId = inserted.recordset[0].Id;
+  }
+
+  const values = await pool.request()
+    .input('CategoryId', sql.Int, categoryId)
+    .query('SELECT TOP 1 Id FROM LookupValue WHERE CategoryId=@CategoryId');
+  if (!values.recordset[0]) {
+    await pool.request()
+      .input('CategoryId', sql.Int, categoryId)
+      .input('Code', sql.NVarChar(100), String(DEFAULT_RENEWAL_WINDOW_DAYS))
+      .input('Name', sql.NVarChar(200), 'تعداد روز')
+      .input('NameEn', sql.NVarChar(200), 'Renewal window days')
+      .input('Description', sql.NVarChar(500), 'مقدار پیش‌فرض ۱۰ روز')
+      .query(`INSERT INTO LookupValue(CategoryId, Code, Name, NameEn, Description, IsActive, IsRequired, SortOrder)
+              VALUES (@CategoryId, @Code, @Name, @NameEn, @Description, 1, 0, 1)`);
+  }
+}

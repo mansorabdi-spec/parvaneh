@@ -1,11 +1,32 @@
-import { DB_ERROR_MESSAGE } from '../lib/db.js';
+import { DB_ERROR_MESSAGE, cleanupStaleConnections } from '../lib/db.js';
+
+// Track cleanup attempts to prevent race conditions
+let cleanupInProgress = false;
 
 /**
  * Middleware to catch and handle database errors consistently across all routes
  * This should be used as the last error handler in the middleware chain
+ * Automatically cleans up stale connections when EINVALIDSTATE error occurs
  */
-export function dbErrorHandler(err, req, res, next) {
+export async function dbErrorHandler(err, req, res, next) {
   console.error('Error caught by dbErrorHandler:', err);
+  
+  // Automatically cleanup stale connections on EINVALIDSTATE error
+  if ((err.code === 'EINVALIDSTATE' || err.originalError?.code === 'EINVALIDSTATE') && !cleanupInProgress) {
+    cleanupInProgress = true;
+    try {
+      console.log('[dbErrorHandler] Auto-cleaning stale connections due to EINVALIDSTATE error...');
+      await cleanupStaleConnections();
+      console.log('[dbErrorHandler] Stale connections cleaned up successfully');
+    } catch (cleanupError) {
+      console.error('[dbErrorHandler] Error during cleanup:', cleanupError.message);
+    } finally {
+      // Reset flag after a delay
+      setTimeout(() => {
+        cleanupInProgress = false;
+      }, 5000);
+    }
+  }
 
   // Check if it's our custom database connection error
   if (err.isDbConnectionError || err.message === DB_ERROR_MESSAGE) {

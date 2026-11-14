@@ -10,7 +10,7 @@ export async function getRequestByTracking(req, res, next) {
     const result = await pool.request()
       .input('TrackingNo', sql.NVarChar(30), trackingNo)
       .query(`
-        SELECT 
+        SELECT TOP 1
           r.RequestID,
           r.VehicleID,
           r.NationalCode,
@@ -33,6 +33,7 @@ export async function getRequestByTracking(req, res, next) {
         LEFT JOIN LookupValue lt ON r.LicenseTypeId = lt.Id
         LEFT JOIN LookupValue ot ON r.OperationTypeId = ot.Id
         WHERE r.TrackingNo = @TrackingNo
+        ORDER BY r.RequestID DESC
       `);
 
     if (!result.recordset || result.recordset.length === 0) {

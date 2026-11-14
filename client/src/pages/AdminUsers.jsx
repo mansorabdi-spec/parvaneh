@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api.js'
+import { isAdminRoleName, viewerIsSuperAdminOnly } from '../lib/roleVisibility.js'
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([])
@@ -12,6 +13,41 @@ export default function AdminUsers() {
   const [selectedCompany, setSelectedCompany] = useState(null)
   const [companySearchTerm, setCompanySearchTerm] = useState('')
   const [showCompanyDropdown, setShowCompanyDropdown] = useState(false)
+
+  // Check if current user can edit roles (only Admin can, not superadmin)
+  const [canEditRoles, setCanEditRoles] = useState(false)
+  const [hideAdmin, setHideAdmin] = useState(() => viewerIsSuperAdminOnly())
+
+  useEffect(() => {
+    const checkAdminRole = async () => {
+      try {
+        const token = localStorage.getItem('token')
+        if (!token) {
+          setCanEditRoles(false)
+          return
+        }
+        
+        const response = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        
+        if (!response.ok) throw new Error('Failed to fetch user')
+        
+        const data = await response.json()
+        const currentUser = data?.user || {}
+        const roleNames = [currentUser.Role, ...(currentUser.Roles || [])].filter(Boolean)
+        const hasAdmin = roleNames.some(isAdminRoleName)
+        const hasSuperAdmin = roleNames.includes('superadmin')
+        setCanEditRoles(hasAdmin)
+        setHideAdmin(hasSuperAdmin && !hasAdmin)
+      } catch (e) {
+        console.error('Error checking user roles:', e)
+        setCanEditRoles(false)
+      }
+    }
+    
+    checkAdminRole()
+  }, [])
   
   // Filters state
   const [filters, setFilters] = useState({
@@ -38,7 +74,7 @@ export default function AdminUsers() {
         api.get('/api/company/all')
       ])
       setUsers(u.data)
-      setRoles(r.data.map(x => x.Name))
+      setRoles((r.data || []).map(x => x.Name).filter(name => !hideAdmin || !isAdminRoleName(name)))
       setCompanies(c.data.companies || [])
     } catch (e) {
       setError(e?.response?.data?.message || 'خطا در دریافت اطلاعات کاربران')
@@ -47,11 +83,14 @@ export default function AdminUsers() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [hideAdmin])
 
   // Filter users based on filter criteria
   const filteredUsers = useMemo(() => {
     return users.filter(user => {
+      if (hideAdmin && (isAdminRoleName(user.PrimaryRole) || (user.Roles || []).some(isAdminRoleName))) {
+        return false
+      }
       // ID filter
       if (filters.id && !String(user.Id).includes(filters.id)) {
         return false
@@ -87,7 +126,7 @@ export default function AdminUsers() {
       }
       return true
     })
-  }, [users, filters])
+  }, [users, filters, hideAdmin])
 
   // Paginate filtered users
   const paginatedUsers = useMemo(() => {
@@ -198,7 +237,8 @@ export default function AdminUsers() {
     }
   }
 
-  const UserRow = ({ user, rowNumber }) => {
+  // Pass canEditRoles to UserRow component
+  const UserRow = ({ user, rowNumber, editable }) => {
     const [primaryRole, setPrimaryRole] = useState(user.PrimaryRole || 'User')
     const [extraRoles, setExtraRoles] = useState(new Set((user.Roles || []).filter(r => r !== primaryRole)))
     const [roleToAdd, setRoleToAdd] = useState('')
@@ -229,39 +269,68 @@ export default function AdminUsers() {
       updateUserRole(user.Id, { primaryRole, roles: Array.from(extraRoles) })
     }
 
+    const isReadOnly = !editable
+
     return (
-      <tr>
+      <tr style={isReadOnly ? { background: '#f9f9f9' } : {}}>
         <td>{rowNumber}</td>
         <td>{user.NationalCode || user.Username}</td>
         <td>{user.FullName}</td>
         <td>{user.Email || '-'}</td>
         <td>{user.IsActive ? 'فعال' : 'غیرفعال'}</td>
         <td>
-          <select value={primaryRole} onChange={(e) => setPrimaryRole(e.target.value)}>
+          <select 
+            value={primaryRole} 
+            onChange={(e) => setPrimaryRole(e.target.value)}
+            disabled={isReadOnly}
+            style={isReadOnly ? { background: '#f5f5f5', cursor: 'not-allowed' } : {}}
+          >
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </td>
         <td>
           <div style={{ display:'flex', alignItems:'center', gap: 8, flexWrap: 'wrap' }}>
-            <select value={roleToAdd} onChange={e => setRoleToAdd(e.target.value)}>
+            <select 
+              value={roleToAdd} 
+              onChange={e => setRoleToAdd(e.target.value)}
+              disabled={isReadOnly}
+              style={isReadOnly ? { background: '#f5f5f5', cursor: 'not-allowed' } : {}}
+            >
               <option value="">انتخاب نقش...</option>
               {roles.filter(r => r !== primaryRole && !extraRoles.has(r)).map(r => (
                 <option key={r} value={r}>{r}</option>
               ))}
             </select>
-            <button className="btn btn-blue" onClick={addSelectedRole} disabled={!roleToAdd}>افزودن</button>
+            <button 
+              className="btn btn-blue" 
+              onClick={addSelectedRole} 
+              disabled={!roleToAdd || isReadOnly}
+            >
+              افزودن
+            </button>
             <div style={{ display:'flex', gap: 6, flexWrap: 'wrap' }}>
               {Array.from(extraRoles).map(r => (
                 <span key={r} className="badge">
                   {r}
-                  <button className="badge-x" onClick={() => removeRole(r)} title="حذف">×</button>
+                  <button 
+                    className="badge-x" 
+                    onClick={() => removeRole(r)} 
+                    title="حذف"
+                    disabled={isReadOnly}
+                  >×</button>
                 </span>
               ))}
             </div>
           </div>
         </td>
         <td>
-          <button className="btn btn-green" onClick={save} disabled={savingId === user.Id}>{savingId === user.Id ? 'در حال ذخیره...' : 'ذخیره نقش‌ها'}</button>
+          <button 
+            className="btn btn-green" 
+            onClick={save} 
+            disabled={savingId === user.Id || isReadOnly}
+          >
+            {savingId === user.Id ? 'در حال ذخیره...' : isReadOnly ? 'غیرفعال' : 'ذخیره نقش‌ها'}
+          </button>
           {' '}
           <button className="btn btn-yellow" onClick={() => toggleActive(user)} disabled={busyId === user.Id}>
             {busyId === user.Id ? '...' : (user.IsActive ? 'غیرفعال‌سازی' : 'فعال‌سازی')}
@@ -478,7 +547,7 @@ export default function AdminUsers() {
             ) : (
               paginatedUsers.map((u, index) => {
                 const rowNumber = (currentPage - 1) * recordsPerPage + index + 1
-                return <UserRow key={u.Id} user={u} rowNumber={rowNumber} />
+                return <UserRow key={u.Id} user={u} rowNumber={rowNumber} editable={canEditRoles} />
               })
             )}
           </tbody>

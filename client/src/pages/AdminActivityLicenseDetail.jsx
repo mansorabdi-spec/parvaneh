@@ -235,6 +235,7 @@ export default function AdminActivityLicenseDetail() {
                 { label: 'ظرفیت', value: vehicle.Capacity },
                 { label: 'تعداد سیلندر', value: vehicle.Cylinders },
                 { label: 'تعداد محور', value: vehicle.Axles },
+                { label: 'تعداد چرخ', value: vehicle.Wheels },
                 { label: 'کانتینر دار', value: vehicle.IsContainer ? 'بله' : 'خیر' },
                 { label: 'پلاک', value: `${vehicle.PlateSerial2}-${vehicle.PlateThreeDigits} ${vehicle.PlateLetter} ${vehicle.PlateRegion2}` },
                 { label: 'تاریخ بازدید', value: vehicle.InspectionDateJalali },

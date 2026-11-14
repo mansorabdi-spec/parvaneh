@@ -1,0 +1,78 @@
+import { PcPosError } from './pcpos.protocol.js';
+import { clearToken, readSession, writeSession } from './pcpos.session.js';
+
+function readTimeout() {
+  const requested = Number(process.env.PCPOS_TIMEOUT_MS ?? 170000);
+  if (!Number.isFinite(requested)) return 170000;
+  return Math.min(200000, Math.max(60000, Math.trunc(requested)));
+}
+
+function readPort(value) {
+  const port = Number(value ?? 17000);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 17000;
+  return port;
+}
+
+function isValidHost(host) {
+  if (!host || host.length > 253 || /[\s/]/.test(host) || host.includes('://')) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return host.split('.').every((part) => Number(part) >= 0 && Number(part) <= 255);
+  }
+  return /^[A-Za-z0-9.-]+$/.test(host);
+}
+
+export function getPcPosConfig() {
+  const saved = readSession();
+  const applicationId = process.env.PCPOS_APPLICATION_ID;
+  const host = String(saved.host || process.env.PCPOS_HOST || '').trim();
+  const portSource = saved.port || process.env.PCPOS_PORT || 17000;
+  return {
+    host,
+    port: readPort(portSource),
+    timeoutMs: readTimeout(),
+    applicationId: applicationId == null ? '9999999999999999' : String(applicationId).trim(),
+    token: String(saved.token || process.env.PCPOS_TOKEN || '').trim(),
+  };
+}
+
+export function getPcPosPublicSettings() {
+  const config = getPcPosConfig();
+  return {
+    host: config.host,
+    port: config.port,
+    paired: Boolean(config.token),
+  };
+}
+
+export function savePcPosSettings({ host, port }) {
+  const nextHost = String(host ?? '').trim();
+  const nextPort = Number(port);
+  if (!isValidHost(nextHost)) {
+    throw new PcPosError('آی‌پی کارتخوان نامعتبر است');
+  }
+  if (!Number.isInteger(nextPort) || nextPort < 1 || nextPort > 65535) {
+    throw new PcPosError('پورت کارتخوان نامعتبر است');
+  }
+  const session = readSession();
+  const changed = session.host !== nextHost || Number(session.port) !== nextPort;
+  session.host = nextHost;
+  session.port = nextPort;
+  if (changed) {
+    delete session.token;
+    delete session.pairedAt;
+  }
+  writeSession(session);
+  return getPcPosPublicSettings();
+}
+
+export function assertPcPosConfigured(config = getPcPosConfig()) {
+  if (!config.host) {
+    const error = new PcPosError('آی‌پی کارتخوان وارد نشده است. در صفحهٔ کیوسک آی‌پی و پورت HTTP دستگاه را ذخیره کنید', 503);
+    throw error;
+  }
+  return config;
+}
+
+export function forgetPcPosToken() {
+  clearToken();
+}

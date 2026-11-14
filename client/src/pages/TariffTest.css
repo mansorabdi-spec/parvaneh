@@ -1,0 +1,219 @@
+.tariff-test-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.tariff-test-container h1 {
+  color: #2c3e50;
+  border-bottom: 3px solid #3498db;
+  padding-bottom: 1rem;
+  margin-bottom: 2rem;
+}
+
+.tariff-test-container h2 {
+  color: #34495e;
+  margin-bottom: 1rem;
+}
+
+.test-section {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-weight: 600;
+  color: #34495e;
+}
+
+.form-group input,
+.form-group select {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #3498db;
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+.tracking-input-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tracking-input-group input {
+  flex: 1;
+}
+
+.btn-primary {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #2980b9;
+}
+
+.result-section {
+  background: #fff;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.loading {
+  color: #f39c12;
+  font-weight: 600;
+  padding: 1rem;
+  text-align: center;
+}
+
+.error {
+  background: #fee;
+  color: #c0392b;
+  border: 1px solid #fcc;
+  border-radius: 4px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  white-space: pre-line;
+}
+
+.calculation-result {
+  margin-top: 1rem;
+}
+
+.result-card {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.result-card.success {
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+}
+
+.result-card h3 {
+  margin-bottom: 1rem;
+  color: #155724;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.result-row:last-child {
+  border-bottom: none;
+}
+
+.result-row.total {
+  background: #28a745;
+  color: white;
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.result-row.total .label,
+.result-row.total .value {
+  color: white;
+}
+
+.result-row .label {
+  font-weight: 600;
+  color: #495057;
+}
+
+.result-row .value {
+  color: #2c3e50;
+  font-weight: 500;
+}
+
+.tariffs-list-section {
+  background: #fff;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.tariffs-list-section p {
+  color: #6c757d;
+  margin-bottom: 1rem;
+}
+
+.tariffs-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.tariffs-table th,
+.tariffs-table td {
+  padding: 0.75rem;
+  text-align: center;
+  border: 1px solid #dee2e6;
+}
+
+.tariffs-table th {
+  background: #343a40;
+  color: white;
+  font-weight: 600;
+}
+
+.tariffs-table tbody tr:nth-child(even) {
+  background: #f8f9fa;
+}
+
+.tariffs-table tbody tr.matched {
+  background: #d4edda !important;
+  font-weight: 600;
+}
+
+.tariffs-table tbody tr:hover {
+  background: #e9ecef;
+}
+
+.debug-info {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-height: 400px;
+  overflow-y: auto;
+}

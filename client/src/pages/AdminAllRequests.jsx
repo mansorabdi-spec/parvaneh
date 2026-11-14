@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { checkPermission, loadUserPermissions } from '../lib/permissions.js'
+import { getDaysUntilShamsiExpiry } from '../lib/shamsiDays.js'
+import { DEFAULT_RENEWAL_WINDOW_DAYS, loadRenewalWindowDays } from '../lib/renewalWindow.js'
 import ManualDateInput from '../components/ManualDateInput.jsx'
 
 export default function AdminAllRequests() {
@@ -12,6 +14,7 @@ export default function AdminAllRequests() {
   const [filter, setFilter] = useState('all') // all, pending, approved, rejected
   const [currentUser, setCurrentUser] = useState(null)
   const [permissionsLoaded, setPermissionsLoaded] = useState(false)
+  const [renewalWindowDays, setRenewalWindowDays] = useState(DEFAULT_RENEWAL_WINDOW_DAYS)
   
   // Pagination state
   const [page, setPage] = useState(1)
@@ -107,6 +110,7 @@ export default function AdminAllRequests() {
       setPermissionsLoaded(true)
       console.log('✅ Permissions loaded in AdminAllRequests')
     })
+    loadRenewalWindowDays().then(setRenewalWindowDays)
   }, [])
   
   useEffect(() => {
@@ -233,6 +237,107 @@ export default function AdminAllRequests() {
       hour: '2-digit',
       minute: '2-digit'
     })
+  }
+
+  // Convert Persian/Arabic digits to English digits
+  const persianToEnglishDigits = (str) => {
+    if (!str) return str
+    const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
+    const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩']
+    const englishDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+    
+    let result = String(str)
+    // Convert Persian digits
+    persianDigits.forEach((persian, i) => {
+      result = result.replace(new RegExp(persian, 'g'), englishDigits[i])
+    })
+    // Convert Arabic digits
+    arabicDigits.forEach((arabic, i) => {
+      result = result.replace(new RegExp(arabic, 'g'), englishDigits[i])
+    })
+    return result
+  }
+
+  // Check if a license has expired based on ExpiryDate
+  // Returns true if the license HAS expired (expiry date is before or equal to today)
+  // Returns false if the license is still valid (expiry date is after today)
+  const isLicenseExpired = (expiryDate, req) => {
+    if (!expiryDate) {
+      return false
+    }
+    
+    try {
+      // Get today's date in Shamsi format using toLocaleDateString with fa-IR calendar
+      const today = new Date()
+      
+      // Use Intl.DateTimeFormat with Baha'i calendar (fa-IR uses Shamsi)
+      const todayShamsi = today.toLocaleDateString('fa-IR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      })
+      
+      // Ensure both are strings and convert to English digits
+      const expiryStr = String(expiryDate).trim()
+      const todayStrRaw = String(todayShamsi).trim()
+      const todayStr = persianToEnglishDigits(todayStrRaw)
+      
+      // Extract year, month, day as numbers
+      const expiryParts = expiryStr.split('/')
+      const todayParts = todayStr.split('/')
+      
+      if (expiryParts.length !== 3 || todayParts.length !== 3) {
+        return false
+      }
+      
+      const expiryYear = parseInt(expiryParts[0])
+      const expiryMonth = parseInt(expiryParts[1])
+      const expiryDay = parseInt(expiryParts[2])
+      
+      const todayYear = parseInt(todayParts[0])
+      const todayMonth = parseInt(todayParts[1])
+      const todayDay = parseInt(todayParts[2])
+      
+      if (isNaN(expiryYear) || isNaN(expiryMonth) || isNaN(expiryDay) ||
+          isNaN(todayYear) || isNaN(todayMonth) || isNaN(todayDay)) {
+        return false
+      }
+      
+      // Compare dates numerically: (year, month, day)
+      // A license is expired if its expiry date is before or equal to today
+      const isExpired = (expiryYear < todayYear) || 
+                        (expiryYear === todayYear && expiryMonth < todayMonth) || 
+                        (expiryYear === todayYear && expiryMonth === todayMonth && expiryDay <= todayDay)
+      
+      return isExpired
+    } catch (e) {
+      console.error('Error checking expiry:', e, 'for expiryDate:', expiryDate)
+      return false
+    }
+  }
+
+  // Handle renewal button click
+  const handleRenewLicense = (req) => {
+    // Navigate to the renewal page based on license type
+    if (req.LicenseTypeName && req.LicenseTypeName.includes('بهره')) {
+      // Exploitation license - navigate to renewal page
+      navigate(`/licenses/exploitation/renew/${req.RequestID}`, { state: { req } })
+    } else if (req.LicenseTypeName && req.LicenseTypeName.includes('اشتغال')) {
+      // Employment license - navigate to renewal page
+      navigate(`/licenses/employment/renew/${req.RequestID}`, { state: { req } })
+    } else if (req.LicenseTypeId === 67 || req.TrackingNo?.startsWith('2')) {
+      // Employment license by LicenseTypeId or TrackingNo
+      navigate(`/licenses/employment/renew/${req.RequestID}`, { state: { req } })
+    } else if (req.LicenseTypeName && req.LicenseTypeName.includes('حقوقی') && req.LicenseTypeName.includes('فعالیت')) {
+      // Legal entity activity license - navigate to activity renewal page
+      navigate(`/licenses/activity/renew/${req.RequestID}`, { state: { req } })
+    } else if (req.LicenseTypeId === 137) {
+      // Legal entity activity license by LicenseTypeId
+      navigate(`/licenses/activity/renew/${req.RequestID}`, { state: { req } })
+    } else {
+      // Individual activity license - use renewal page
+      navigate(`/licenses/activity/renew/${req.RequestID}`, { state: { req } })
+    }
   }
 
   const getStatusBadge = (status) => {
@@ -633,7 +738,13 @@ export default function AdminAllRequests() {
                       background: req.LicenseTypeName?.includes('اشتغال') ? '#fef3c7' : '#dbeafe',
                       color: req.LicenseTypeName?.includes('اشتغال') ? '#92400e' : '#1e40af'
                     }}>
-                      {req.LicenseTypeName || '-'}
+                      {(() => {
+                        // For LicenseTypeId 137, display "فعالیت حقوقی" instead of "فعالیت"
+                        if (req.LicenseTypeId === 137) {
+                          return 'فعالیت حقوقی'
+                        }
+                        return req.LicenseTypeName || '-'
+                      })()}
                     </div>
                   </td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>
@@ -711,57 +822,74 @@ export default function AdminAllRequests() {
                         </button>
                       )}
                       
-                      {/* Edit buttons - only for Admin */}
-                      {currentUser?.Role === 'Admin' && (
-                        <>
-                          <button
-                            onClick={() => {
-                              // Determine license type based on LicenseTypeId or TrackingNo
-                              const isExploitation = req.LicenseTypeId === 68 || req.TrackingNo?.startsWith('11');
-                              const isEmployment = req.LicenseTypeId === 67 || req.TrackingNo?.startsWith('2');
-                              
-                              // Navigate to appropriate edit form
-                              if (isExploitation) {
-                                navigate(`/licenses/exploitation/issue?edit=${req.RequestID}`);
-                              } else if (isEmployment) {
-                                navigate(`/licenses/employment/issue?edit=${req.RequestID}`);
-                              } else {
-                                // Activity license
-                                navigate(`/licenses/activity/issue?edit=${req.RequestID}`);
-                              }
-                            }}
-                            style={{
-                              padding: '6px 16px',
-                              background: '#10b981',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: 'pointer',
-                              fontSize: '13px',
-                              fontWeight: 'bold'
-                            }}
-                            title="ویرایش پرونده"
-                          >
-                            ✏️ ویرایش
-                          </button>
-                          <button
-                            onClick={() => navigate(`/admin/workflow/requests/${req.RequestID}/status-fix`)}
-                            style={{
-                              padding: '6px 16px',
-                              background: '#f97316',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: 'pointer',
-                              fontSize: '13px',
-                              fontWeight: 'bold'
-                            }}
-                            title="اصلاح وضعیت/مرحله توسط مدیر"
-                          >
-                            🛠 اصلاح گردش کار
-                          </button>
-                        </>
-                      )}
+                      {/* Edit buttons - Admin and superadmin */}
+                      {(() => {
+                        const isAdmin = currentUser?.Role === 'Admin'
+                        const isDeputyAdmin = currentUser?.Role === 'superadmin'
+                        const canEdit = isAdmin || isDeputyAdmin
+                        
+                        // Debug log for first request only
+                        if (requests.indexOf(req) === 0) {
+                          console.log('✏️ Edit buttons debug:', {
+                            requestId: req.RequestID,
+                            currentUserRole: currentUser?.Role,
+                            isAdmin,
+                            isDeputyAdmin,
+                            canEdit
+                          })
+                        }
+                        
+                        return canEdit && (
+                          <>
+                            <button
+                              onClick={() => {
+                                // Determine license type based on LicenseTypeId or TrackingNo
+                                const isExploitation = req.LicenseTypeId === 68 || req.TrackingNo?.startsWith('11');
+                                const isEmployment = req.LicenseTypeId === 67 || req.TrackingNo?.startsWith('2');
+                                
+                                // Navigate to appropriate edit form
+                                if (isExploitation) {
+                                  navigate(`/licenses/exploitation/issue?edit=${req.RequestID}`);
+                                } else if (isEmployment) {
+                                  navigate(`/licenses/employment/issue?edit=${req.RequestID}`);
+                                } else {
+                                  // Activity license
+                                  navigate(`/licenses/activity/issue?edit=${req.RequestID}`);
+                                }
+                              }}
+                              style={{
+                                padding: '6px 16px',
+                                background: '#10b981',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title="ویرایش پرونده"
+                            >
+                              ✏️ ویرایش
+                            </button>
+                            <button
+                              onClick={() => navigate(`/admin/workflow/requests/${req.RequestID}/status-fix`)}
+                              style={{
+                                padding: '6px 16px',
+                                background: '#f97316',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title="اصلاح وضعیت/مرحله توسط مدیر"
+                            >
+                              🛠 اصلاح گردش کار
+                            </button>
+                          </>
+                        )
+                      })()}
                       
                       {/* Print License button - check permission or Admin */}
                       {(() => {
@@ -823,25 +951,133 @@ export default function AdminAllRequests() {
                         </button>
                       )}
                       
-                      {/* Delete button - only for Admin */}
-                      {currentUser?.Role === 'Admin' && (
-                        <button
-                          onClick={() => handleDeleteRequest(req.RequestID, req.TrackingNo)}
-                          style={{
-                            padding: '6px 16px',
-                            background: '#ef4444',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            fontSize: '13px',
-                            fontWeight: 'bold'
-                          }}
-                          title="حذف پرونده"
-                        >
-                          🗑️ حذف
-                        </button>
-                      )}
+                      {/* Delete button - Admin and superadmin */}
+                      {(() => {
+                        const isAdmin = currentUser?.Role === 'Admin'
+                        const isDeputyAdmin = currentUser?.Role === 'superadmin'
+                        const canDelete = isAdmin || isDeputyAdmin
+                        
+                        return canDelete && (
+                          <button
+                            onClick={() => handleDeleteRequest(req.RequestID, req.TrackingNo)}
+                            style={{
+                              padding: '6px 16px',
+                              background: '#ef4444',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '13px',
+                              fontWeight: 'bold'
+                            }}
+                            title="حذف پرونده"
+                          >
+                            🗑️ حذف
+                          </button>
+                        )
+                      })()}
+                      
+                      {/* Renew button - Admin and superadmin - active inside the configured renewal window, or when the license is already expired */}
+                      {(() => {
+                        const isAdmin = currentUser?.Role === 'Admin'
+                        const isDeputyAdmin = currentUser?.Role === 'superadmin'
+                        const canRenew = isAdmin || isDeputyAdmin
+                        const daysUntilExpiry = getDaysUntilShamsiExpiry(req.ExpiryDate)
+                        const isExpired = daysUntilExpiry === null
+                          ? isLicenseExpired(req.ExpiryDate, req)
+                          : daysUntilExpiry <= 0
+                        const canRenewNow = daysUntilExpiry === null
+                          ? isExpired
+                          : daysUntilExpiry <= renewalWindowDays
+                        
+                        // Only show renew button for approved requests
+                        const shouldShow = canRenew && req.Status === 'Approved'
+                        
+                        // Debug log for first request only
+                        if (requests.indexOf(req) === 0) {
+                          console.log('🔄 Renew button debug:', {
+                            requestId: req.RequestID,
+                            currentUserRole: currentUser?.Role,
+                            isAdmin,
+                            isDeputyAdmin,
+                            canRenew,
+                            status: req.Status,
+                            expiryDate: req.ExpiryDate,
+                            daysUntilExpiry,
+                            isExpired,
+                            canRenewNow,
+                            shouldShow
+                          })
+                        }
+
+                        const renewTitle = !canRenewNow
+                          ? `تمدید پروانه - بیش از ${toFarsiNumber(renewalWindowDays)} روز تا انقضا مانده است`
+                          : isExpired
+                            ? 'تمدید پروانه - منقضی شده'
+                            : `تمدید پروانه - ${toFarsiNumber(daysUntilExpiry)} روز تا انقضا مانده است`
+                        
+                        return shouldShow && (
+                          <>
+                            <button
+                              onClick={() => handleRenewLicense(req)}
+                              disabled={!canRenewNow}
+                              style={{
+                                padding: '6px 16px',
+                                background: canRenewNow ? '#059669' : '#d1d5db',
+                                color: canRenewNow ? 'white' : '#9ca3af',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: canRenewNow ? 'pointer' : 'not-allowed',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title={renewTitle}
+                            >
+                              🔄 تمدید
+                            </button>
+                            <button
+                              onClick={() => {
+                                const isExploitation = req.LicenseTypeId === 68 || req.TrackingNo?.startsWith('11')
+                                const isEmployment = req.LicenseTypeId === 67 || req.TrackingNo?.startsWith('2')
+                                const isLegalEntity = req.LicenseTypeId === 137
+                                
+                                console.log('🔄 Change button clicked:', {
+                                  requestId: req.RequestID,
+                                  LicenseTypeId: req.LicenseTypeId,
+                                  TrackingNo: req.TrackingNo,
+                                  isExploitation,
+                                  isEmployment,
+                                  isLegalEntity,
+                                  targetUrl: isExploitation ? `/licenses/exploitation/change/${req.RequestID}` : isEmployment ? `/licenses/employment/change/${req.RequestID}` : isLegalEntity ? `/licenses/activity/legal/change/${req.RequestID}` : `/licenses/activity/change/${req.RequestID}`
+                                })
+                                
+                                if (isExploitation) {
+                                  navigate(`/licenses/exploitation/change/${req.RequestID}`)
+                                } else if (isEmployment) {
+                                  navigate(`/licenses/employment/change/${req.RequestID}`)
+                                } else if (isLegalEntity) {
+                                  navigate(`/licenses/activity/legal/change/${req.RequestID}`)
+                                } else {
+                                  navigate(`/licenses/activity/change/${req.RequestID}`)
+                                }
+                              }}
+                              style={{
+                                padding: '6px 16px',
+                                background: '#f59e0b',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title="درخواست تغییر پروانه"
+                            >
+                              📝 تغییر
+                            </button>
+                          </>
+                        )
+                      })()}
                     </div>
                   </td>
                 </tr>

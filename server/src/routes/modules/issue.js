@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { upsertVehicle, upsertPersonal, listPersonalDocuments, savePersonalDocument, deletePersonalDocument, getPersonalDocumentContent, getPersonByNationalCode, listVehicleDocuments, saveVehicleDocument, deleteVehicleDocument, getVehicleDocumentContent, getVehicleByChassis, listVehicleDiscountDocuments, saveVehicleDiscountDocument, deleteVehicleDiscountDocument, getVehicleDiscountDocumentContent, createVehicleRequest, getVehicleByVin, checkPendingRequestByVin, checkVinRegistration, listEmploymentDiscountDocuments, saveEmploymentDiscountDocument, deleteEmploymentDiscountDocument, getEmploymentDiscountDocumentContent, createEmploymentRequest, createExploitationRequest } from '../../controllers/issue.controller.js';
+import { upsertVehicle, upsertPersonal, listPersonalDocuments, savePersonalDocument, deletePersonalDocument, getPersonalDocumentContent, getPersonByNationalCode, listVehicleDocuments, saveVehicleDocument, deleteVehicleDocument, getVehicleDocumentContent, getVehicleByChassis, listVehicleDiscountDocuments, saveVehicleDiscountDocument, deleteVehicleDiscountDocument, getVehicleDiscountDocumentContent, createVehicleRequest, getVehicleByVin, checkPendingRequestByVin, checkVinRegistration, listEmploymentDiscountDocuments, saveEmploymentDiscountDocument, deleteEmploymentDiscountDocument, getEmploymentDiscountDocumentContent, createEmploymentRequest, createExploitationRequest, renewVehicleRequest, renewExploitationRequest } from '../../controllers/issue.controller.js';
 import { upsertCompany, getCompanyByNationalId, getCompanyByOwnerNationalCode, uploadCompanyDocument, getCompanyDocuments, getCompanyDocumentContent, deleteCompanyDocument } from '../../controllers/issue.company.js';
 import { authRequired } from '../../middleware/auth.js';
 
@@ -53,13 +53,17 @@ router.post('/company/:nationalId/documents', upload.single('file'), uploadCompa
 router.delete('/company/:nationalId/documents/:docId', deleteCompanyDocument);
 router.get('/company/:nationalId/documents/:docId/content', getCompanyDocumentContent);
 
-// Vehicle documents
+// Renewal - Create new VehicleRequests record with existing tracking number
+// IMPORTANT: This route must be BEFORE /vehicle/:vehicleId/documents to avoid conflicts
+router.post('/vehicle/:vehicleId/renew', authRequired, renewVehicleRequest);
+
+// Vehicle documents (must be AFTER /vehicle/:vehicleId/renew)
 router.get('/vehicle/:vehicleId/documents', listVehicleDocuments);
 router.post('/vehicle/:vehicleId/documents', upload.single('file'), saveVehicleDocument);
 router.delete('/vehicle/:vehicleId/documents/:docId', deleteVehicleDocument);
 router.get('/vehicle/:vehicleId/documents/:docId/content', getVehicleDocumentContent);
 
-// Vehicle discount documents
+// Vehicle discount documents (must be AFTER /vehicle/:vehicleId/renew)
 router.get('/vehicle/:vehicleId/discount-documents', listVehicleDiscountDocuments);
 router.post('/vehicle/:vehicleId/discount-documents', upload.single('file'), saveVehicleDiscountDocument);
 router.delete('/vehicle/:vehicleId/discount-documents/:docId', deleteVehicleDiscountDocument);
@@ -71,9 +75,14 @@ router.post('/employment/:nationalCode/discount-documents', upload.single('file'
 router.delete('/employment/:nationalCode/discount-documents/:docId', deleteEmploymentDiscountDocument);
 router.get('/employment/:nationalCode/discount-documents/:docId/content', getEmploymentDiscountDocumentContent);
 
-// Finalize
+// Finalize vehicle request
 router.post('/vehicle/:vehicleId/finalize', authRequired, createVehicleRequest);
+// Finalize employment request
 router.post('/employment/finalize', authRequired, createEmploymentRequest);
+// Finalize exploitation request
 router.post('/exploitation/finalize', authRequired, createExploitationRequest);
+
+// Renew exploitation request - Create new record with existing license number
+router.post('/exploitation/renew', authRequired, renewExploitationRequest);
 
 export default router;

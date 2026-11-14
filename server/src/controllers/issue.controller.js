@@ -5,12 +5,14 @@ import { initializeWorkflow } from './workflow.controller.js';
 /**
  * Get next sequence number from SequenceCounters table
  * This ensures no duplicate tracking numbers even if records are deleted
+ * Uses a single transaction with proper cleanup to prevent connection leaks
  */
 async function getNextSequence(pool, counterType, prefix = 'DEFAULT') {
   const tx = new sql.Transaction(pool);
-  await tx.begin();
   
   try {
+    await tx.begin();
+    
     // Get current counter with row lock
     const result = await new sql.Request(tx)
       .input('CounterType', sql.NVarChar(50), counterType)
@@ -63,14 +65,22 @@ async function getNextSequence(pool, counterType, prefix = 'DEFAULT') {
       return initialValue;
     }
   } catch (err) {
-    await tx.rollback();
+    // Always rollback on error to prevent connection leaks
+    try {
+      await tx.rollback();
+    } catch (rollbackErr) {
+      // Ignore rollback errors if transaction already completed
+      if (rollbackErr.code !== 'EINVALIDSTATE') {
+        console.error('[getNextSequence] Rollback error:', rollbackErr.message);
+      }
+    }
     throw err;
   }
 }
 
 const required = [
   'vehicleKindId','systemId','systemTipId','yearManufacture','capacity','fuelTypeId','trackerTypeId',
-  'cylinders','axles','vin','chassisNo','engineNo','bodyColor','activityCategoryId','plateTypeId',
+  'cylinders','axles','wheels','vin','chassisNo','engineNo','bodyColor','activityCategoryId','plateTypeId',
   'inspectionDate','greenCardDate','isContainer','insuranceCompanyId','insurancePolicyNo','insuranceIssueDate',
   'insuranceValidDate','techInspectSerial','techInspectIssueDate','techInspectValidDate'
 ];
@@ -312,6 +322,214 @@ export async function checkVinRegistration(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// ---------------- Renew Exploitation License Request -----------------
+export async function renewExploitationRequest(req, res, next) {
+  try {
+    const nationalId = String(req.body?.nationalId || '').trim();
+    const registrationNo = String(req.body?.registrationNo || '').trim();
+    const existingTrackingNo = String(req.body?.existingTrackingNo || '').trim();
+    const isRenewal = req.body?.isRenewal || false;
+    const finalDescription = String(req.body?.finalDescription || '').trim() || null;
+    
+    if (!nationalId) return res.status(400).json({ message: 'شناسه ملی شرکت الزامی است' });
+    
+    const pool = await getPool();
+    const userId = req.user?.id || null;
+    
+    console.log('=== renewExploitationRequest ===');
+    console.log('nationalId:', nationalId);
+    console.log('registrationNo:', registrationNo);
+    console.log('existingTrackingNo:', existingTrackingNo);
+    console.log('isRenewal:', isRenewal);
+    console.log('=============================');
+    
+    // Get existing company by national ID
+    const companyResult = await pool.request()
+      .input('NationalId', sql.NVarChar(100), nationalId)
+      .query(`
+        SELECT TOP 1 ci.CompanyName, ci.RegistrationNo, ci.NationalCode, ci.ManagerNationalCode,
+               ci.CompanyTypeId, ci.ActivityFieldId, ci.TonnageRateId
+        FROM CompanyInfo ci
+        WHERE LTRIM(RTRIM(ci.NationalId)) = LTRIM(RTRIM(@NationalId))
+      `);
+    
+    if (!companyResult.recordset || companyResult.recordset.length === 0) {
+      return res.status(404).json({ message: 'شرکت مورد نظر یافت نشد' });
+    }
+    
+    const company = companyResult.recordset[0];
+    const managerNationalCode = String(company.ManagerNationalCode || company.NationalCode || '').trim();
+    if (!managerNationalCode) {
+      return res.status(400).json({ 
+        message: 'کد ملی مدیر شرکت یافت نشد. لطفاً ابتدا مشخصات مدیر شرکت را تکمیل کنید.' 
+      });
+    }
+
+    // Renew the license identified by the page's tracking number.
+    // Fall back to the latest approved exploitation license of this company.
+    const sourceResult = await pool.request()
+      .input('CompanyNationalId', sql.NVarChar(100), nationalId)
+      .input('TrackingNo', sql.NVarChar(30), existingTrackingNo || null)
+      .query(`
+        SELECT TOP 1
+          r.RequestID, r.TrackingNo, r.Status,
+          r.TonnageFromTon, r.TonnageToTon, r.FinalAmount, r.OriginalAmount
+        FROM VehicleRequests r
+        WHERE LTRIM(RTRIM(r.CompanyNationalId)) = LTRIM(RTRIM(@CompanyNationalId))
+          AND (r.LicenseTypeId = 68 OR r.TrackingNo LIKE N'11%')
+          AND r.Status IN (N'Approved', N'Completed')
+          AND (
+            @TrackingNo IS NULL
+            OR LTRIM(RTRIM(r.TrackingNo)) = LTRIM(RTRIM(@TrackingNo))
+          )
+        ORDER BY
+          CASE
+            WHEN @TrackingNo IS NOT NULL AND LTRIM(RTRIM(r.TrackingNo)) = LTRIM(RTRIM(@TrackingNo)) THEN 0
+            ELSE 1
+          END,
+          r.CreatedAt DESC
+      `);
+    
+    if (sourceResult.recordset.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'پروانه بهره‌برداری معتبر برای تمدید یافت نشد'
+      });
+    }
+    
+    const source = sourceResult.recordset[0];
+    const trackingNo = source.TrackingNo;
+    console.log(`🔄 Renewing exploitation license ${trackingNo} from request ${source.RequestID}`);
+    
+    const duplicateCheck = await pool.request()
+      .input('CompanyNationalId', sql.NVarChar(100), nationalId)
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .query(`
+        SELECT TOP 1 r.RequestID, r.TrackingNo, r.Status
+        FROM VehicleRequests r
+        WHERE LTRIM(RTRIM(r.CompanyNationalId)) = LTRIM(RTRIM(@CompanyNationalId))
+          AND LTRIM(RTRIM(r.TrackingNo)) = LTRIM(RTRIM(@TrackingNo))
+          AND (r.LicenseTypeId = 68 OR r.TrackingNo LIKE N'11%')
+          AND r.Status IN (N'Pending', N'InProgress')
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+      const existing = duplicateCheck.recordset[0];
+      console.log(`❌ Open exploitation renewal found: RequestID=${existing.RequestID}, Status=${existing.Status}`);
+      return res.status(400).json({ 
+        success: false,
+        message: `برای این پروانه یک درخواست تمدید باز وجود دارد.\nشماره پیگیری: ${existing.TrackingNo}`,
+        trackingNo: existing.TrackingNo,
+        requestId: existing.RequestID,
+        status: existing.Status
+      });
+    }
+
+    const renewalTypeResult = await pool.request()
+      .query(`SELECT TOP 1 Id FROM LookupValue WHERE Name = N'تمدید' ORDER BY Id`);
+    const renewalOperationTypeId = renewalTypeResult.recordset[0]?.Id || 45;
+
+    const fromTon = source.TonnageFromTon == null ? null : Number(source.TonnageFromTon);
+    const toTon = source.TonnageToTon == null ? null : Number(source.TonnageToTon);
+    let tariffAmount = Number(source.FinalAmount || source.OriginalAmount || 0);
+    if (fromTon != null && !Number.isNaN(fromTon)) {
+      const tariffResult = await pool.request()
+        .input('LicenseType', sql.NVarChar(50), 'پروانه بهره برداری')
+        .input('DocTypeId', sql.Int, renewalOperationTypeId)
+        .input('FromTon', sql.Float, fromTon)
+        .query(`
+          SELECT TOP 1 Amount
+          FROM Tariffs
+          WHERE LicenseType = @LicenseType
+            AND DocTypeId = @DocTypeId
+            AND CAST(FromTon AS FLOAT) <= @FromTon
+            AND CAST(ToTon AS FLOAT) >= @FromTon
+          ORDER BY CAST(FromTon AS FLOAT) DESC
+        `);
+      if (tariffResult.recordset[0]?.Amount != null) {
+        tariffAmount = Number(tariffResult.recordset[0].Amount);
+      }
+    }
+    
+    console.log(`📝 Exploitation renewal: manager=${managerNationalCode}, tracking=${trackingNo}, operation=${renewalOperationTypeId}, amount=${tariffAmount}`);
+    
+    const r = await pool.request()
+      .input('NationalCode', sql.NVarChar(20), managerNationalCode)
+      .input('CompanyNationalId', sql.NVarChar(100), nationalId)
+      .input('LicenseTypeId', sql.Int, 68)
+      .input('OperationTypeId', sql.Int, renewalOperationTypeId)
+      .input('FinalDescription', sql.NVarChar(2000), finalDescription)
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .input('SubmittedByUserId', sql.Int, userId)
+      .input('OriginalAmount', sql.Decimal(18, 2), tariffAmount || 0)
+      .input('FinalAmount', sql.Decimal(18, 2), tariffAmount || 0)
+      .input('TonnageFromTon', sql.Float, fromTon)
+      .input('TonnageToTon', sql.Float, toTon)
+      .query(`
+        INSERT INTO VehicleRequests (
+          NationalCode, CompanyNationalId, LicenseTypeId, OperationTypeId, 
+          FinalDescription, TrackingNo, SubmittedByUserId,
+          OriginalAmount, FinalAmount, TonnageFromTon, TonnageToTon
+        ) OUTPUT INSERTED.RequestID, INSERTED.TrackingNo
+        VALUES (
+          @NationalCode, @CompanyNationalId, @LicenseTypeId, @OperationTypeId,
+          @FinalDescription, @TrackingNo, @SubmittedByUserId,
+          @OriginalAmount, @FinalAmount, @TonnageFromTon, @TonnageToTon
+        )
+      `);
+    
+    const row = r.recordset?.[0];
+    
+    if (row?.RequestID) {
+      console.log(`✅ Exploitation renewal request created: RequestID=${row.RequestID}, TrackingNo=${row.TrackingNo}`);
+      
+      let flowResult = await pool.request()
+        .input('LicenseType', sql.NVarChar(30), 'Exploitation_Renewal')
+        .query('SELECT StepOrder, RoleName FROM GlobalApprovalFlowSteps WHERE LicenseType = @LicenseType ORDER BY StepOrder');
+
+      if (!flowResult.recordset?.length) {
+        flowResult = await pool.request()
+          .input('LicenseType', sql.NVarChar(30), 'Exploitation')
+          .query('SELECT StepOrder, RoleName FROM GlobalApprovalFlowSteps WHERE LicenseType = @LicenseType ORDER BY StepOrder');
+      }
+      
+      if (flowResult.recordset && flowResult.recordset.length > 0) {
+        const firstStepOrder = Math.min(...flowResult.recordset.map(step => Number(step.StepOrder)))
+        for (const step of flowResult.recordset) {
+          const stepStatus = Number(step.StepOrder) === firstStepOrder ? 'Pending' : 'NotStarted'
+          await pool.request()
+            .input('RequestID', sql.BigInt, row.RequestID)
+            .input('StepOrder', sql.Int, step.StepOrder)
+            .input('RoleName', sql.NVarChar(50), step.RoleName)
+            .input('Status', sql.NVarChar(20), stepStatus)
+            .input('Notes', sql.NVarChar(2000), null)
+            .query(`
+              INSERT INTO RequestWorkflowSteps (RequestID, StepOrder, RoleName, Status, Notes, CreatedAt)
+              VALUES (@RequestID, @StepOrder, @RoleName, @Status, @Notes, GETDATE())
+            `);
+        }
+        
+        await pool.request()
+          .input('RequestID', sql.BigInt, row.RequestID)
+          .input('Status', sql.NVarChar(20), 'InProgress')
+          .input('CurrentStepOrder', sql.Int, firstStepOrder)
+          .query(`
+            UPDATE VehicleRequests 
+            SET Status = @Status, CurrentStepOrder = @CurrentStepOrder
+            WHERE RequestID = @RequestID
+          `);
+        
+        console.log(`✅ Exploitation renewal workflow started at step ${firstStepOrder} for request ${row.RequestID}`);
+      }
+    }
+    
+    return res.status(201).json({ 
+      requestId: row?.RequestID, 
+      trackingNo: row?.TrackingNo
+    });
+  } catch (e) { next(e); }
+}
+
 // ---------------- Finalize Request -----------------
 export async function createVehicleRequest(req, res, next) {
   try {
@@ -415,12 +633,86 @@ export async function createVehicleRequest(req, res, next) {
     
     const hasDiscountDocs = discountDocsCheck.recordset[0].Count > 0;
     
-    // Get tariff amount - use a default or first available tariff
-    // In a real scenario, this would be based on vehicle category, tonnage, etc.
-    const tariffResult = await pool.request()
-      .query(`SELECT TOP 1 Amount FROM Tariffs ORDER BY Id DESC`);
+    // Get vehicle details for tariff calculation
+    const vehicleResult2 = await pool.request()
+      .input('VehicleID', sql.BigInt, vehicleId)
+      .query(`
+        SELECT v.*, lv1.Name AS VehicleKindName, lv2.Name AS ActivityCategoryName
+        FROM Vehicles v
+        LEFT JOIN LookupValue lv1 ON lv1.Id = v.VehicleKindId
+        LEFT JOIN LookupValue lv2 ON lv2.Id = v.ActivityCategoryId
+        WHERE v.VehicleID = @VehicleID
+      `);
     
-    const tariffAmount = tariffResult.recordset[0]?.Amount || 1000000; // Default 1M if no tariff found
+    const vehicleData = vehicleResult2.recordset[0];
+    const capacityTon = parseFloat(vehicleData?.Capacity) || 0;
+    
+    // Get the operation type name to determine the correct DocTypeId
+    const opTypeResult = await pool.request()
+      .input('OperationTypeId', sql.Int, operationTypeId)
+      .query(`SELECT TOP 1 Id, Name FROM LookupValue WHERE Id = @OperationTypeId`);
+    const operationTypeName = opTypeResult.recordset[0]?.Name || '';
+    
+    // Determine DocTypeId based on operation type
+    let docTypeId;
+    if (operationTypeName === 'تمدید اجباری') {
+      docTypeId = operationTypeId; // Use the operationTypeId directly as DocTypeId for compulsory renewal
+    } else if (operationTypeName === 'تمدید') {
+      // Get normal renewal DocTypeId
+      const renewalResult = await pool.request()
+        .query(`SELECT TOP 1 Id FROM LookupValue WHERE Name = N'تمدید'`);
+      docTypeId = renewalResult.recordset[0]?.Id || 45;
+    } else {
+      // For 'صدور' (issuance), use the operationTypeId directly
+      docTypeId = operationTypeId;
+    }
+    
+    console.log(`💰 Looking up tariff: LicenseType='پروانه فعالیت', DocTypeId=${docTypeId} (operation: ${operationTypeName}), CapacityTon=${capacityTon}`);
+    
+    // Get tariff amount based on LicenseType, DocType (operation type), and vehicle capacity/tonnage
+    const tariffResult = await pool.request()
+      .input('LicenseType', sql.NVarChar(200), 'پروانه فعالیت')
+      .input('DocTypeId', sql.Int, docTypeId)
+      .input('CapacityTon', sql.Float, capacityTon)
+      .query(`
+        SELECT TOP 1 Id, Amount, FromTon, ToTon
+        FROM Tariffs
+        WHERE LicenseType = @LicenseType
+          AND DocTypeId = @DocTypeId
+          AND CAST(FromTon AS FLOAT) <= @CapacityTon
+          AND CAST(ToTon AS FLOAT) >= @CapacityTon
+        ORDER BY CAST(FromTon AS FLOAT) DESC
+      `);
+    
+    let tariffAmount = 0;
+    if (tariffResult.recordset && tariffResult.recordset.length > 0) {
+      tariffAmount = tariffResult.recordset[0]?.Amount || 0;
+      const tariffFromTon = tariffResult.recordset[0]?.FromTon;
+      const tariffToTon = tariffResult.recordset[0]?.ToTon;
+      console.log(`💰 Tariff found: Amount=${tariffAmount}, Range=${tariffFromTon}-${tariffToTon} for capacity ${capacityTon} tons`);
+    } else {
+      // Fallback: try to find any tariff for the license type and doc type
+      console.warn(`⚠️ No exact tariff found for capacity ${capacityTon} tons, trying fallback...`);
+      const fallbackResult = await pool.request()
+        .input('LicenseType', sql.NVarChar(200), 'پروانه فعالیت')
+        .input('DocTypeId', sql.Int, docTypeId)
+        .query(`
+          SELECT TOP 1 Id, Amount, FromTon, ToTon
+          FROM Tariffs
+          WHERE LicenseType = @LicenseType
+            AND DocTypeId = @DocTypeId
+          ORDER BY Id DESC
+        `);
+      
+      if (fallbackResult.recordset && fallbackResult.recordset.length > 0) {
+        tariffAmount = fallbackResult.recordset[0]?.Amount || 0;
+        console.log(`💰 Fallback tariff found: Amount=${tariffAmount}`);
+      } else {
+        // Default 1M if no tariff found
+        tariffAmount = 1000000;
+        console.warn(`⚠️ No tariff found at all, using default: ${tariffAmount}`);
+      }
+    }
     
     // Set discount status based on whether discount documents exist
     const discountStatus = hasDiscountDocs ? 'Pending' : 'None';
@@ -545,6 +837,313 @@ export async function createVehicleRequest(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// ---------------- Renew Vehicle Request (Reuse Existing Tracking Number) -----------------
+/**
+ * For renewal, create a new VehicleRequests record but reuse the EXISTING tracking number
+ * This is used when a user renews their activity license
+ */
+export async function renewVehicleRequest(req, res, next) {
+  try {
+    const vehicleId = Number(req.params.vehicleId);
+    const { licenseTypeId, operationTypeId, finalDescription, existingTrackingNo, ownershipType } = req.body;
+    const userId = req.user?.id;
+    const nationalCode = req.user?.nationalCode;
+    
+    // Debug logging
+    console.log('=== renewVehicleRequest Debug ===');
+    console.log('req.user:', req.user);
+    console.log('vehicleId:', vehicleId);
+    console.log('licenseTypeId:', licenseTypeId);
+    console.log('operationTypeId:', operationTypeId);
+    console.log('existingTrackingNo:', existingTrackingNo);
+    console.log('ownershipType:', ownershipType);
+    
+    // Validate required fields
+    if (!vehicleId || !licenseTypeId || !operationTypeId || !existingTrackingNo) {
+      return res.status(400).json({ 
+        message: 'لطفاً شناسه خودرو، نوع پروانه، نوع عملیات و شماره پیگیری را وارد کنید' 
+      });
+    }
+    
+    const pool = await getPool();
+    
+    // Check if there's an ACTIVE request or license for this vehicle and license type
+    // For renewal, we only block if there's a PENDING request (not yet processed)
+    // Approved/Completed/Expired licenses should NOT block renewal
+    const existingCheck = await pool.request()
+      .input('VehicleID', sql.BigInt, vehicleId)
+      .input('LicenseTypeId', sql.Int, licenseTypeId)
+      .query(`
+        SELECT TOP 1 RequestID, Status, TrackingNo 
+        FROM VehicleRequests 
+        WHERE VehicleID = @VehicleID AND LicenseTypeId = @LicenseTypeId AND Status = 'Pending'
+        ORDER BY CreatedAt DESC
+      `);
+    
+    if (existingCheck.recordset.length > 0) {
+      const existing = existingCheck.recordset[0];
+      return res.status(400).json({ 
+        message: `شما یک درخواست فعال برای این خودرو دارید. وضعیت: ${existing.Status}\nشماره پیگیری: ${existing.TrackingNo}`,
+        requestId: existing.RequestID,
+        status: existing.Status
+      });
+    }
+    
+    // Check if there's an approved/completed license (this is normal for renewal)
+    const approvedCheck = await pool.request()
+      .input('VehicleID', sql.BigInt, vehicleId)
+      .input('LicenseTypeId', sql.Int, licenseTypeId)
+      .query(`
+        SELECT TOP 1 RequestID, Status, TrackingNo 
+        FROM VehicleRequests 
+        WHERE VehicleID = @VehicleID AND LicenseTypeId = @LicenseTypeId AND Status IN ('Approved', 'Completed')
+        ORDER BY CreatedAt DESC
+      `);
+    
+    if (approvedCheck.recordset.length > 0) {
+      // This is an expired/completed license - renewal is allowed
+      const approved = approvedCheck.recordset[0];
+      console.log(`ℹ️ Found existing approved license: ${approved.TrackingNo}, allowing renewal`);
+    }
+    
+    // Get vehicle details
+    const vehicleResult = await pool.request()
+      .input('VehicleID', sql.BigInt, vehicleId)
+      .query(`
+        SELECT v.*,
+               v.RegistrarNationalCode AS VehicleRegistrarCode,
+               p.FirstName AS RegistrarFirstName,
+               p.LastName AS RegistrarLastName
+        FROM Vehicles v
+        LEFT JOIN Persons p ON v.RegistrarNationalCode = p.NationalCode
+        WHERE v.VehicleID = @VehicleID
+      `);
+    
+    if (vehicleResult.recordset.length === 0) {
+      return res.status(404).json({ message: 'خودرویی با این شناسه یافت نشد' });
+    }
+    
+    const vehicle = vehicleResult.recordset[0];
+    
+    // Get activity category code from LookupValue table
+    const categoryResult = await pool.request()
+      .input('ActivityCategoryId', sql.Int, vehicle.ActivityCategoryId)
+      .query(`SELECT TOP 1 Code FROM LookupValue WHERE Id = @ActivityCategoryId`);
+    
+    const activityCategoryCode = categoryResult.recordset[0]?.Code || '00';
+    
+    // Get the existing tracking number (don't generate new one)
+    const trackingNo = existingTrackingNo;
+    
+    console.log(`📋 Using EXISTING tracking number for renewal: ${trackingNo}`);
+    
+    // ---- Calculate renewal tariff amount from Tariffs table ----
+    // The tariff pricing depends on WHICH kind of renewal was selected:
+    //   - Normal renewal            => LookupValue 'تمدید'         (DocTypeId 45)
+    //   - Compulsory/forced renewal => LookupValue 'تمدید اجباری'  (DocTypeId 172)
+    // The wizard's operationTypeId radio button may still be pointing at "صدور" by default,
+    // so we resolve the REAL doc type to price/store based on the selected operation type's name,
+    // falling back to normal renewal (تمدید) when it isn't explicitly "تمدید اجباری".
+    const capacityTon = parseFloat(vehicle.Capacity) || 0;
+    const renewalLicenseType = 'پروانه فعالیت'; // Tariffs table only has this LicenseType for renewal DocTypeIds
+
+    const selectedOpTypeResult = await pool.request()
+      .input('OperationTypeId', sql.Int, operationTypeId)
+      .query(`SELECT TOP 1 Id, Name FROM LookupValue WHERE Id = @OperationTypeId`);
+    const selectedOpTypeName = selectedOpTypeResult.recordset[0]?.Name || '';
+
+    const isCompulsoryRenewal = selectedOpTypeName === 'تمدید اجباری';
+
+    let RENEWAL_DOC_TYPE_ID;
+    if (isCompulsoryRenewal) {
+      RENEWAL_DOC_TYPE_ID = operationTypeId; // client already sent the "تمدید اجباری" LookupValue Id (used as DocTypeId directly)
+    } else {
+      const normalRenewalLookup = await pool.request()
+        .query(`SELECT TOP 1 Id FROM LookupValue WHERE Name = N'تمدید'`);
+      RENEWAL_DOC_TYPE_ID = normalRenewalLookup.recordset[0]?.Id || 45; // fallback to known Id
+    }
+
+    console.log(`💰 Looking up renewal tariff: LicenseType=${renewalLicenseType}, DocTypeId=${RENEWAL_DOC_TYPE_ID} (isCompulsoryRenewal=${isCompulsoryRenewal}), CapacityTon=${capacityTon}`);
+
+
+    const renewalTariffResult = await pool.request()
+      .input('LicenseType', sql.NVarChar(200), renewalLicenseType)
+      .input('DocTypeId', sql.Int, RENEWAL_DOC_TYPE_ID)
+      .input('CapacityTon', sql.Float, capacityTon)
+      .query(`
+        SELECT TOP 1 Id, Amount, FromTon, ToTon
+        FROM Tariffs
+        WHERE LicenseType = @LicenseType
+          AND DocTypeId = @DocTypeId
+          AND CAST(FromTon AS FLOAT) <= @CapacityTon
+          AND CAST(ToTon AS FLOAT) >= @CapacityTon
+        ORDER BY CAST(FromTon AS FLOAT) DESC
+      `);
+
+    let renewalTariff = renewalTariffResult.recordset[0];
+
+    // Fallback: if no exact tonnage range matched, use the highest matching range for this LicenseType/DocTypeId
+    if (!renewalTariff) {
+      const fallbackResult = await pool.request()
+        .input('LicenseType', sql.NVarChar(200), renewalLicenseType)
+        .input('DocTypeId', sql.Int, RENEWAL_DOC_TYPE_ID)
+        .query(`
+          SELECT TOP 1 Id, Amount, FromTon, ToTon
+          FROM Tariffs
+          WHERE LicenseType = @LicenseType
+            AND DocTypeId = @DocTypeId
+          ORDER BY CAST(FromTon AS FLOAT) DESC
+        `);
+      renewalTariff = fallbackResult.recordset[0];
+    }
+
+    const renewalTariffAmount = renewalTariff?.Amount || 0;
+
+    console.log(`💰 Renewal tariff resolved: Amount=${renewalTariffAmount} (TariffId=${renewalTariff?.Id ?? 'N/A'}, Range=${renewalTariff?.FromTon ?? '-'}-${renewalTariff?.ToTon ?? '-'})`);
+
+    // Keep the applicant on the renewal row. Vehicles has RegistrarNationalCode,
+    // not NationalCode, so older renewals were inserted with a null applicant and
+    // the admin list showed "-".
+    let requestNationalCode = null;
+    let requestCompanyNationalId = null;
+
+    const originalIdentity = await pool.request()
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .query(`
+        SELECT TOP 1
+          NULLIF(LTRIM(RTRIM(NationalCode)), N'') AS NationalCode,
+          NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') AS CompanyNationalId
+        FROM VehicleRequests
+        WHERE TrackingNo = @TrackingNo
+          AND (
+            NULLIF(LTRIM(RTRIM(NationalCode)), N'') IS NOT NULL
+            OR NULLIF(LTRIM(RTRIM(CompanyNationalId)), N'') IS NOT NULL
+          )
+        ORDER BY CreatedAt ASC, RequestID ASC
+      `);
+
+    if (originalIdentity.recordset.length > 0) {
+      requestNationalCode = originalIdentity.recordset[0].NationalCode || null;
+      requestCompanyNationalId = originalIdentity.recordset[0].CompanyNationalId || null;
+    } else {
+      const ownerCode = String(vehicle.VehicleRegistrarCode || '').trim() || null;
+      if (ownerCode) {
+        if (ownershipType === 'حقوقی') {
+          requestCompanyNationalId = ownerCode;
+        } else {
+          const companyMatch = await pool.request()
+            .input('NationalId', sql.NVarChar(100), ownerCode)
+            .query(`SELECT TOP 1 NationalId FROM CompanyInfo WHERE LTRIM(RTRIM(NationalId)) = LTRIM(RTRIM(@NationalId))`);
+          if (companyMatch.recordset.length > 0) {
+            requestCompanyNationalId = ownerCode;
+          } else {
+            requestNationalCode = ownerCode;
+          }
+        }
+      }
+    }
+
+    if (requestNationalCode) {
+      const personExists = await pool.request()
+        .input('NationalCode', sql.NVarChar(20), requestNationalCode)
+        .query(`SELECT TOP 1 NationalCode FROM Persons WHERE LTRIM(RTRIM(NationalCode)) = LTRIM(RTRIM(@NationalCode))`);
+      if (!personExists.recordset.length) {
+        console.warn(`⚠️ Renewal national code ${requestNationalCode} is not in Persons; storing NULL to satisfy FK`);
+        requestNationalCode = null;
+      }
+    }
+
+    console.log(`📝 Renewal applicant: NationalCode=${requestNationalCode}, CompanyNationalId=${requestCompanyNationalId}, ownershipType=${ownershipType}`);
+
+    // Insert into VehicleRequests with EXISTING tracking number
+    const r = await pool.request()
+      .input('NationalCode', sql.NVarChar(20), requestNationalCode)
+      .input('CompanyNationalId', sql.NVarChar(100), requestCompanyNationalId)
+      .input('VehicleID', sql.BigInt, vehicleId)
+      .input('LicenseTypeId', sql.Int, licenseTypeId)
+      .input('OperationTypeId', sql.Int, operationTypeId)
+      .input('FinalDescription', sql.NVarChar(2000), finalDescription || null)
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .input('SubmittedByUserId', sql.Int, userId)
+      .input('OriginalAmount', sql.Decimal(18, 2), renewalTariffAmount)
+      .input('FinalAmount', sql.Decimal(18, 2), renewalTariffAmount)
+      .query(`
+        INSERT INTO VehicleRequests (
+          NationalCode, CompanyNationalId, VehicleID, LicenseTypeId, OperationTypeId,
+          FinalDescription, TrackingNo, SubmittedByUserId,
+          DiscountStatus, OriginalAmount, FinalAmount
+        )
+        OUTPUT INSERTED.RequestID, INSERTED.TrackingNo
+        VALUES (
+          @NationalCode, @CompanyNationalId, @VehicleID, @LicenseTypeId, @OperationTypeId,
+          @FinalDescription, @TrackingNo, @SubmittedByUserId,
+          'None', @OriginalAmount, @FinalAmount
+        )
+      `);
+
+    
+    const row = r.recordset?.[0];
+    
+    if (!row?.RequestID) {
+      return res.status(500).json({ message: 'خطا در ایجاد درخواست تمدید' });
+    }
+    
+    console.log(`✅ Renewal request created: RequestID=${row.RequestID}, TrackingNo=${row.TrackingNo}`);
+    
+    // Initialize Activity approval workflow from GlobalApprovalFlowSteps
+    const flowResult = await pool.request()
+      .input('LicenseType', sql.NVarChar(20), 'Activity_Renewal')
+      .query('SELECT StepOrder, RoleName FROM GlobalApprovalFlowSteps WHERE LicenseType = @LicenseType ORDER BY StepOrder');
+    
+    if (flowResult.recordset && flowResult.recordset.length > 0) {
+      // Create workflow steps - ALL start as NotStarted
+      for (const step of flowResult.recordset) {
+        await pool.request()
+          .input('RequestID', sql.BigInt, row.RequestID)
+          .input('StepOrder', sql.Int, step.StepOrder)
+          .input('RoleName', sql.NVarChar(50), step.RoleName)
+          .input('Status', sql.NVarChar(20), 'NotStarted')
+          .input('Notes', sql.NVarChar(2000), null)
+          .query(`
+            INSERT INTO RequestWorkflowSteps (RequestID, StepOrder, RoleName, Status, Notes, CreatedAt)
+            VALUES (@RequestID, @StepOrder, @RoleName, @Status, @Notes, GETDATE())
+          `);
+      }
+      
+      // Update request status to Pending (awaiting payment)
+      await pool.request()
+        .input('RequestID', sql.BigInt, row.RequestID)
+        .input('Status', sql.NVarChar(20), 'Pending')
+        .input('CurrentStepOrder', sql.Int, 0)
+        .query(`
+          UPDATE VehicleRequests 
+          SET Status = @Status, CurrentStepOrder = @CurrentStepOrder
+          WHERE RequestID = @RequestID
+        `);
+      
+      console.log(`✅ Activity renewal approval workflow initialized for request ${row.RequestID} with ${flowResult.recordset.length} steps`);
+    } else {
+      console.warn('⚠️ No Activity_Renewal approval flow defined in GlobalApprovalFlowSteps!');
+      // Fallback: create a simple Pending status
+      await pool.request()
+        .input('RequestID', sql.BigInt, row.RequestID)
+        .input('Status', sql.NVarChar(20), 'Pending')
+        .query(`
+          UPDATE VehicleRequests 
+          SET Status = @Status, CurrentStepOrder = 0
+          WHERE RequestID = @RequestID
+        `);
+    }
+    
+    return res.status(201).json({ 
+      requestId: row?.RequestID, 
+      trackingNo: row?.TrackingNo
+    });
+  } catch (e) {
+    console.error('❌ renewVehicleRequest error:', e);
+    next(e);
+  }
+}
 // ---------------- Create Exploitation License Request -----------------
 export async function createExploitationRequest(req, res, next) {
   try {
@@ -895,6 +1494,7 @@ export async function getVehicleByChassis(req, res, next) {
         trackerTypeId: v.TrackerTypeId,
         cylinders: v.Cylinders,
         axles: v.Axles,
+        wheels: v.Wheels,
         vin: v.VIN,
         chassisNo: v.ChassisNo,
         engineNo: v.EngineNo,
@@ -950,6 +1550,7 @@ export async function getVehicleByVin(req, res, next) {
         trackerTypeId: v.TrackerTypeId,
         cylinders: v.Cylinders,
         axles: v.Axles,
+        wheels: v.Wheels,
         vin: v.VIN,
         chassisNo: v.ChassisNo,
         engineNo: v.EngineNo,
@@ -993,7 +1594,7 @@ export async function upsertPersonal(req, res, next) {
     let normalizedMaritalStatus = String(p.maritalStatus || '');
     if (p.maritalStatus === 'single' || p.maritalStatus === 'مجرد') {
       normalizedMaritalStatus = 'مجرد';
-    } else if (p.maritalStatus === 'married' || p.maritalStatus === 'متأهل') {
+    } else if (p.maritalStatus === 'married' || p.maritalStatus === 'متأهل' || p.maritalStatus === 'متاهل') {
       normalizedMaritalStatus = 'متأهل';
     }
 
@@ -1125,6 +1726,7 @@ function rowsEqual(a, v) {
     a.TrackerTypeId === Number(v.trackerTypeId) &&
     a.Cylinders === Number(v.cylinders) &&
     a.Axles === Number(v.axles) &&
+    a.Wheels === Number(v.wheels) &&
     eq(a.EngineNo, v.engineNo) &&
     eq(a.BodyColor, v.bodyColor) &&
     a.ActivityCategoryId === Number(v.activityCategoryId) &&
@@ -1171,7 +1773,7 @@ export async function upsertVehicle(req, res, next) {
     const existing = await pool.request()
       .input('VIN', sql.NVarChar(50), v.vin)
       .input('ChassisNo', sql.NVarChar(50), v.chassisNo)
-      .query(`SELECT TOP 1 * FROM Vehicles WHERE VIN=@VIN OR ChassisNo=@ChassisNo`);
+      .query(`SELECT TOP 1 * FROM Vehicles WHERE VIN=@VIN OR ChassisNo=@ChassisNo ORDER BY CASE WHEN VIN=@VIN THEN 0 ELSE 1 END`);
     const cur = existing.recordset[0];
 
     if (!cur) {
@@ -1188,6 +1790,7 @@ export async function upsertVehicle(req, res, next) {
         .input('TrackerTypeId', sql.Int, Number(v.trackerTypeId))
         .input('Cylinders', sql.Int, Number(v.cylinders))
         .input('Axles', sql.Int, Number(v.axles))
+        .input('Wheels', sql.Int, Number(v.wheels))
         .input('EngineNo', sql.NVarChar(50), String(v.engineNo))
         .input('BodyColor', sql.NVarChar(50), String(v.bodyColor))
         .input('ActivityCategoryId', sql.Int, Number(v.activityCategoryId))
@@ -1209,14 +1812,14 @@ export async function upsertVehicle(req, res, next) {
         .input('TechInspectIssueDateJalali', sql.NVarChar(10), String(v.techInspectIssueDate))
         .input('TechInspectValidDateJalali', sql.NVarChar(10), String(v.techInspectValidDate))
         .query(`INSERT INTO Vehicles(
-          VIN, ChassisNo, VehicleKindId, SystemId, SystemTipId, YearManufacture, Capacity, FuelTypeId, TrackerTypeId, Cylinders, Axles,
+          VIN, ChassisNo, VehicleKindId, SystemId, SystemTipId, YearManufacture, Capacity, FuelTypeId, TrackerTypeId, Cylinders, Axles, Wheels,
           EngineNo, BodyColor, ActivityCategoryId, IsContainer, PlateTypeId, PlateSerial2, PlateThreeDigits, PlateLetter, PlateRegion2,
           RegistrarNationalCode, RegistrarNationality,
           InspectionDateJalali, GreenCardDateJalali, InsuranceCompanyId, InsurancePolicyNo, InsuranceIssueDateJalali, InsuranceValidDateJalali,
           TechInspectSerial, TechInspectIssueDateJalali, TechInspectValidDateJalali
         ) OUTPUT INSERTED.VehicleID
         VALUES(
-          @VIN, @ChassisNo, @VehicleKindId, @SystemId, @SystemTipId, @YearManufacture, @Capacity, @FuelTypeId, @TrackerTypeId, @Cylinders, @Axles,
+          @VIN, @ChassisNo, @VehicleKindId, @SystemId, @SystemTipId, @YearManufacture, @Capacity, @FuelTypeId, @TrackerTypeId, @Cylinders, @Axles, @Wheels,
           @EngineNo, @BodyColor, @ActivityCategoryId, @IsContainer, @PlateTypeId, @PlateSerial2, @PlateThreeDigits, @PlateLetter, @PlateRegion2,
           @RegistrarNationalCode, @RegistrarNationality,
           @InspectionDateJalali, @GreenCardDateJalali, @InsuranceCompanyId, @InsurancePolicyNo, @InsuranceIssueDateJalali, @InsuranceValidDateJalali,
@@ -1242,9 +1845,10 @@ export async function upsertVehicle(req, res, next) {
       .input('Capacity', sql.NVarChar(50), String(v.capacity))
       .input('FuelTypeId', sql.Int, Number(v.fuelTypeId))
       .input('TrackerTypeId', sql.Int, Number(v.trackerTypeId))
-      .input('Cylinders', sql.Int, Number(v.cylinders))
-      .input('Axles', sql.Int, Number(v.axles))
-      .input('EngineNo', sql.NVarChar(50), String(v.engineNo))
+        .input('Cylinders', sql.Int, Number(v.cylinders))
+        .input('Axles', sql.Int, Number(v.axles))
+        .input('Wheels', sql.Int, Number(v.wheels))
+        .input('EngineNo', sql.NVarChar(50), String(v.engineNo))
       .input('BodyColor', sql.NVarChar(50), String(v.bodyColor))
       .input('ActivityCategoryId', sql.Int, Number(v.activityCategoryId))
       .input('IsContainer', sql.Bit, v.isContainer === 'yes' ? 1 : 0)
@@ -1267,7 +1871,7 @@ export async function upsertVehicle(req, res, next) {
       .query(`UPDATE Vehicles SET
         VIN=@VIN, ChassisNo=@ChassisNo, VehicleKindId=@VehicleKindId, SystemId=@SystemId, SystemTipId=@SystemTipId,
         YearManufacture=@YearManufacture, Capacity=@Capacity, FuelTypeId=@FuelTypeId, TrackerTypeId=@TrackerTypeId,
-        Cylinders=@Cylinders, Axles=@Axles, EngineNo=@EngineNo, BodyColor=@BodyColor, ActivityCategoryId=@ActivityCategoryId,
+        Cylinders=@Cylinders, Axles=@Axles, Wheels=@Wheels, EngineNo=@EngineNo, BodyColor=@BodyColor, ActivityCategoryId=@ActivityCategoryId,
         IsContainer=@IsContainer, PlateTypeId=@PlateTypeId, PlateSerial2=@PlateSerial2, PlateThreeDigits=@PlateThreeDigits,
         PlateLetter=@PlateLetter, PlateRegion2=@PlateRegion2, RegistrarNationalCode=@RegistrarNationalCode, RegistrarNationality=@RegistrarNationality,
         InspectionDateJalali=@InspectionDateJalali,
@@ -1726,6 +2330,14 @@ export async function createEmploymentRequest(req, res, next) {
       return res.status(400).json({ message: 'Missing vehicleId for employment license' });
     }
     
+    // Check if this is a renewal request with an existing tracking number
+    const existingTrackingNo = req.body?.existingTrackingNo || null;
+    const isRenewal = req.body?.isRenewal || false;
+    
+    if (isRenewal && existingTrackingNo) {
+      console.log(`🔄 Employment license renewal - using EXISTING tracking number: ${existingTrackingNo}`);
+    }
+    
     // Get vehicle capacity and activity category (same as activity license logic)
     const vehicleResult = await pool.request()
       .input('VehicleID', sql.BigInt, vehicleId)
@@ -1768,15 +2380,23 @@ export async function createEmploymentRequest(req, res, next) {
     // Build the prefix for this vehicle type and activity: 2XYY
     const prefix = `2${vehicleType}${paddedActivityCode}`;
     
-    // Get the next sequential number from SequenceCounters table
-    // Use 'DEFAULT' to have a single shared counter for all employment licenses
-    // This prevents duplicate numbers even if records are deleted
-    const sequentialNumber = await getNextSequence(pool, 'Employment', 'DEFAULT');
-    
-    // Format: 2XYY-NNNNN
-    const trackingNo = `${prefix}-${sequentialNumber.toString().padStart(5, '0')}`;
-    
-    console.log(`📊 Generated employment tracking number: ${trackingNo} (Capacity: ${capacityKg}kg, Type: ${vehicleType}, Activity: ${paddedActivityCode}, Seq: ${sequentialNumber})`);
+    // Generate tracking number - use existing one for renewal
+    let trackingNo;
+    if (isRenewal && existingTrackingNo) {
+      // For renewal, reuse the existing tracking number (same license number)
+      trackingNo = existingTrackingNo;
+      console.log(`🔄 Using EXISTING tracking number for renewal: ${trackingNo}`);
+    } else {
+      // For new requests, generate a new tracking number
+      // Get the next sequential number from SequenceCounters table
+      // Use 'DEFAULT' to have a single shared counter for all employment licenses
+      // This prevents duplicate numbers even if records are deleted
+      const sequentialNumber = await getNextSequence(pool, 'Employment', 'DEFAULT');
+      
+      // Format: 2XYY-NNNNN
+      trackingNo = `${prefix}-${sequentialNumber.toString().padStart(5, '0')}`;
+      console.log(`📊 Generated employment tracking number: ${trackingNo} (Capacity: ${capacityKg}kg, Type: ${vehicleType}, Activity: ${paddedActivityCode}, Seq: ${sequentialNumber})`);
+    }
     
     console.log('=== createEmploymentRequest Debug ===');
     console.log('nationalCode:', nationalCode);
@@ -1787,7 +2407,9 @@ export async function createEmploymentRequest(req, res, next) {
     console.log('userId:', userId);
     console.log('=====================================');
     
-    // Check for existing active employment request for this person and vehicle
+    // Check for existing PENDING employment request for this person and vehicle
+    // For renewal (تمدید), we only block if there's a PENDING request (not yet processed)
+    // Approved/Completed/Expired licenses should NOT block renewal
     const duplicateCheck = await pool.request()
       .input('NationalCode', sql.NVarChar(20), nationalCode)
       .input('VehicleID', sql.Int, vehicleId)
@@ -1797,7 +2419,7 @@ export async function createEmploymentRequest(req, res, next) {
         WHERE r.NationalCode = @NationalCode 
           AND r.VehicleID = @VehicleID
           AND r.LicenseTypeId = 67 -- Employment License Type ID
-          AND r.Status NOT IN ('Rejected', 'Cancelled')
+          AND r.Status = 'Pending'
       `);
 
     if (duplicateCheck.recordset.length > 0) {
@@ -1805,11 +2427,31 @@ export async function createEmploymentRequest(req, res, next) {
       console.log(`❌ Duplicate employment request found: RequestID=${existing.RequestID}, Status=${existing.Status}`);
       return res.status(400).json({ 
         success: false,
-        message: `شما قبلاً برای این خودرو درخواست پروانه اشتغال داده‌اید. کد رهگیری: ${existing.TrackingNo}`,
+        message: `شما یک درخواست فعال برای این خودرو دارید. وضعیت: ${existing.Status}\nشماره پیگیری: ${existing.TrackingNo}`,
         trackingNo: existing.TrackingNo,
         requestId: existing.RequestID,
         status: existing.Status
       });
+    }
+    
+    // Check if there's an approved/completed license (this is normal for renewal)
+    const approvedCheck = await pool.request()
+      .input('NationalCode', sql.NVarChar(20), nationalCode)
+      .input('VehicleID', sql.Int, vehicleId)
+      .query(`
+        SELECT TOP 1 r.RequestID, r.TrackingNo, r.Status
+        FROM VehicleRequests r
+        WHERE r.NationalCode = @NationalCode 
+          AND r.VehicleID = @VehicleID
+          AND r.LicenseTypeId = 67 -- Employment License Type ID
+          AND r.Status IN ('Approved', 'Completed')
+        ORDER BY r.CreatedAt DESC
+      `);
+    
+    if (approvedCheck.recordset.length > 0) {
+      // This is an expired/completed license - renewal is allowed
+      const approved = approvedCheck.recordset[0];
+      console.log(`ℹ️ Found existing approved employment license: ${approved.TrackingNo}, allowing renewal`);
     }
 
     // Check if person has discount documents
@@ -1864,9 +2506,15 @@ export async function createEmploymentRequest(req, res, next) {
     if (row?.RequestID) {
       console.log(`📝 Initializing Employment approval workflow for request ${row.RequestID}`);
       
+      // Determine which license type to use for workflow
+      // For renewal (existingTrackingNo provided), use 'Employment_Renewal'
+      // For new requests, use 'Employment'
+      const licenseTypeForWorkflow = existingTrackingNo ? 'Employment_Renewal' : 'Employment';
+      console.log(`📝 Using license type for workflow: ${licenseTypeForWorkflow} (existingTrackingNo: ${existingTrackingNo ? 'yes' : 'no'})`);
+      
       // Get Employment approval flow
       const flowResult = await pool.request()
-        .input('LicenseType', sql.NVarChar(20), 'Employment')
+        .input('LicenseType', sql.NVarChar(20), licenseTypeForWorkflow)
         .query('SELECT StepOrder, RoleName FROM GlobalApprovalFlowSteps WHERE LicenseType = @LicenseType ORDER BY StepOrder');
       
       if (flowResult.recordset && flowResult.recordset.length > 0) {

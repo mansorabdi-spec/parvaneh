@@ -226,7 +226,11 @@ export async function getAllLicenseHistory(req, res, next) {
         ci.TonnageRateId,
         tr.Name AS TonnageRateName,
         COALESCE(op.Amount, ofp.Amount) AS PaidAmount,
-        COALESCE(op.CalculatedAmount, ofp.CalculatedAmount) AS CalculatedAmount,
+        CASE 
+          WHEN op.CalculatedAmount IS NOT NULL THEN op.CalculatedAmount
+          WHEN ofp.CalculatedAmount IS NOT NULL THEN ofp.CalculatedAmount
+          ELSE NULL
+        END AS CalculatedAmount,
         CASE 
           WHEN op.Amount IS NOT NULL THEN 'Online'
           WHEN ofp.Amount IS NOT NULL THEN 'Offline'
@@ -249,14 +253,14 @@ export async function getAllLicenseHistory(req, res, next) {
           COALESCE(GatewayRef, GatewayAuthority, CAST(Id AS nvarchar(50))) AS ReceiptNo
         FROM OnlinePayment
         WHERE RequestID = lh.RequestID AND PayedBit = 1
-        ORDER BY PaidAt DESC
+        ORDER BY CASE WHEN CalculatedAmount IS NULL THEN 1 ELSE 0 END, PaidAt DESC, Id DESC
       ) op
       OUTER APPLY (
         SELECT TOP 1 Amount, CalculatedAmount, CreatedAt,
           COALESCE(ReceiptNo, CAST(Id AS nvarchar(50))) AS ReceiptNo
         FROM OfflinePayment
         WHERE RequestID = lh.RequestID
-        ORDER BY CreatedAt DESC
+        ORDER BY CASE WHEN CalculatedAmount IS NULL THEN 1 ELSE 0 END, CreatedAt DESC, Id DESC
       ) ofp
       ${whereClause}
       ORDER BY lh.CreatedAt DESC

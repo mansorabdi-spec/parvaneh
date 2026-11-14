@@ -1,4 +1,10 @@
 import { getPool, sql } from '../lib/db.js';
+import {
+  getFieldCatalog,
+  queryComprehensiveReport,
+  buildExcelXml,
+  statusLabel
+} from '../lib/comprehensiveReport.js';
 
 // Get all activity license reports (vehicles with person and contact info)
 export async function getActivityLicenseReports(req, res, next) {
@@ -127,6 +133,87 @@ export async function getVehicleDetailReport(req, res, next) {
       payments
     });
   } catch (e) {
+    next(e);
+  }
+}
+
+export async function getComprehensiveReportMeta(req, res, next) {
+  try {
+    const pool = await getPool();
+    const [licenseTypes, operationTypes, statuses] = await Promise.all([
+      pool.request().query(`
+        SELECT DISTINCT lt.Id, lt.Name
+        FROM VehicleRequests vr
+        INNER JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
+        WHERE lt.Name IS NOT NULL
+        ORDER BY lt.Name
+      `),
+      pool.request().query(`
+        SELECT DISTINCT ot.Id, ot.Name
+        FROM VehicleRequests vr
+        INNER JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
+        WHERE ot.Name IS NOT NULL
+        ORDER BY ot.Name
+      `),
+      pool.request().query(`
+        SELECT DISTINCT Status
+        FROM VehicleRequests
+        WHERE Status IS NOT NULL AND LTRIM(RTRIM(Status)) <> ''
+        ORDER BY Status
+      `)
+    ]);
+
+    res.json({
+      ...getFieldCatalog(),
+      licenseTypes: (licenseTypes.recordset || []).map((row) => ({ id: row.Id, name: row.Name })),
+      operationTypes: (operationTypes.recordset || []).map((row) => ({ id: row.Id, name: row.Name })),
+      statuses: (statuses.recordset || []).map((row) => ({
+        value: row.Status,
+        label: statusLabel(row.Status)
+      }))
+    });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function postComprehensiveReport(req, res, next) {
+  try {
+    const pool = await getPool();
+    const result = await queryComprehensiveReport(pool, {
+      fieldKeys: req.body?.fields,
+      filters: req.body?.filters || {},
+      page: req.body?.page,
+      pageSize: req.body?.pageSize
+    });
+    res.json({
+      columns: result.fields.map(({ key, label, type }) => ({ key, label, type: type || 'text' })),
+      rows: result.rows,
+      total: result.total,
+      page: result.page,
+      pageSize: result.pageSize
+    });
+  } catch (e) {
+    if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
+    next(e);
+  }
+}
+
+export async function exportComprehensiveReport(req, res, next) {
+  try {
+    const pool = await getPool();
+    const result = await queryComprehensiveReport(pool, {
+      fieldKeys: req.body?.fields,
+      filters: req.body?.filters || {},
+      forExport: true
+    });
+    const xml = buildExcelXml(result.fields, result.rows);
+    const filename = encodeURIComponent(`گزارش_جامع_${new Date().toISOString().slice(0, 10)}.xls`);
+    res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="comprehensive-report.xls"; filename*=UTF-8''${filename}`);
+    res.send(xml);
+  } catch (e) {
+    if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
     next(e);
   }
 }

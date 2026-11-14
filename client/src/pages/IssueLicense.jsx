@@ -3,10 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import ManualDateInput from '../components/ManualDateInput'
 
-export default function IssueLicense({ user }) {
+export default function IssueLicense({ user, editRequestId: editRequestIdProp }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const editRequestId = searchParams.get('edit')
+  // Use prop if provided, otherwise read from URL params
+  const editRequestId = editRequestIdProp || searchParams.get('edit')
   const [current, setCurrent] = useState(0)
   const [doneMessage, setDoneMessage] = useState('')
   const [isEditMode, setIsEditMode] = useState(false)
@@ -42,6 +43,7 @@ export default function IssueLicense({ user }) {
     trackerTypeId: '',
     cylinders: '',
     axles: '',
+    wheels: '',
     vin: '',
     chassisNo: '',
     engineNo: '',
@@ -69,7 +71,7 @@ export default function IssueLicense({ user }) {
     nationality: 'ایران',
     nationalCode: (user?.Role === 'کارگزار (بهره بردار)' || user?.role === 'کارگزار (بهره بردار)') ? '' : (user?.nationalCode || ''),
     vin: '',
-    consent: false
+    consent: true
   })
   
   // Ownership type
@@ -160,6 +162,7 @@ export default function IssueLicense({ user }) {
       trackerTypeId: v.trackerTypeId?.toString() || '',
       cylinders: v.cylinders?.toString() || '',
       axles: v.axles?.toString() || '',
+      wheels: v.wheels?.toString() || '',
       activityCategoryId: v.activityCategoryId?.toString() || '',
       plateTypeId: v.plateTypeId?.toString() || '',
       insuranceCompanyId: v.insuranceCompanyId?.toString() || '',
@@ -244,11 +247,18 @@ export default function IssueLicense({ user }) {
       
       setRequestId(reqId)
       setEditModeTrackingNo(data.request?.trackingNo || data.TrackingNo || '')
-      
-      // Set ownership type from request
-      const ownershipTypeValue = data.request?.ownershipType || data.OwnershipType
-      if (ownershipTypeValue) {
-        setOwnershipType(ownershipTypeValue)
+
+      // Ownership is stored on the request as legal license type 137,
+      // a license name containing حقوقی, or a company national id.
+      const licenseTypeIdValue = data.request?.licenseTypeId ?? data.LicenseTypeId
+      const licenseTypeName = data.request?.licenseTypeName || data.LicenseTypeName || ''
+      const companyNationalId = String(data.request?.companyNationalId || data.company?.NationalId || '').trim()
+      const isLegalOwnership = Number(licenseTypeIdValue) === 137
+        || String(licenseTypeName).includes('حقوقی')
+        || !!companyNationalId
+      setOwnershipType(isLegalOwnership ? 'حقوقی' : 'حقیقی')
+      if (isLegalOwnership && companyNationalId) {
+        setStart(s => ({ ...s, nationalCode: companyNationalId }))
       }
       
       // Load personal info
@@ -287,7 +297,9 @@ export default function IssueLicense({ user }) {
           })) || []
         }
         setPersonal(personalData)
-        setStart(s => ({ ...s, nationalCode: data.person.NationalCode || '' }))
+        if (!isLegalOwnership) {
+          setStart(s => ({ ...s, nationalCode: data.person.NationalCode || '' }))
+        }
       }
       
       // Load company info for legal entities
@@ -301,6 +313,7 @@ export default function IssueLicense({ user }) {
           economicCode: data.company.EconomicCode || '',
           mainActivity: data.company.MainActivity || '',
           activityFieldId: data.company.ActivityFieldId?.toString() || '',
+          activityFieldName: data.company.ActivityFieldName || '',
           companyTypeId: data.company.CompanyTypeId?.toString() || '',
           registrationDate: data.company.RegistrationDate || '',
           businessLicenseValidFrom: data.company.BusinessLicenseValidFrom || '',
@@ -347,11 +360,13 @@ export default function IssueLicense({ user }) {
           trackerTypeId: data.vehicle.TrackerTypeId,
           cylinders: data.vehicle.Cylinders,
           axles: data.vehicle.Axles,
+          wheels: data.vehicle.Wheels,
           vin: data.vehicle.VIN,
           chassisNo: data.vehicle.ChassisNo,
           engineNo: data.vehicle.EngineNo,
           bodyColor: data.vehicle.BodyColor,
           activityCategoryId: data.vehicle.ActivityCategoryId,
+          activityCategoryName: data.vehicle.ActivityCategoryName || '',
           isContainer: data.vehicle.IsContainer,
           plateTypeId: data.vehicle.PlateTypeId,
           plate: {
@@ -441,12 +456,14 @@ export default function IssueLicense({ user }) {
         console.log('✅ Discount documents set to state:', docs)
       }
       
-      // Set license type and operation type
-      if (data.LicenseTypeId) {
-        setLicenseTypeId(data.LicenseTypeId.toString())
+      // Set license type and operation type from the request row
+      const requestLicenseTypeId = data.request?.licenseTypeId ?? data.LicenseTypeId
+      const requestOperationTypeId = data.request?.operationTypeId ?? data.OperationTypeId
+      if (requestLicenseTypeId) {
+        setLicenseTypeId(String(requestLicenseTypeId))
       }
-      if (data.OperationTypeId) {
-        setOperationTypeId(data.OperationTypeId.toString())
+      if (requestOperationTypeId) {
+        setOperationTypeId(String(requestOperationTypeId))
       }
       
       // Set final description
@@ -616,8 +633,8 @@ export default function IssueLicense({ user }) {
         { Id: 4, Name: 'فکس' }
       ])
       
-      // Auto-select license type based on ownership type (only on initial load)
-      if (!licenseTypeId && !isEditMode) {
+      // Auto-select license type based on ownership type (only for a new request)
+      if (!editRequestId && !licenseTypeId) {
         const targetLicenseType = ownershipType === 'حقوقی' 
           ? lt.find(x => String(x.Id || x.ID) === '137') // Legal entity activity license
           : lt.find(x => x.Name === 'فعالیت') // Individual activity license
@@ -627,9 +644,9 @@ export default function IssueLicense({ user }) {
         }
       }
       
-      // Auto-select "صدور" (Issuance) as default operation type
+      // Auto-select "صدور" (Issuance) as default operation type for a new request
       const issuanceType = ot.find(x => x.Name === 'صدور')
-      if (issuanceType && !operationTypeId) {
+      if (!editRequestId && issuanceType && !operationTypeId) {
         setOperationTypeId(String(issuanceType.Id || issuanceType.ID))
       }
     })()
@@ -826,7 +843,7 @@ export default function IssueLicense({ user }) {
 
   const vehicleRequired = [
     'vehicleKindId','systemId','systemTipId','yearManufacture','capacity','fuelTypeId','trackerTypeId',
-    'cylinders','axles','vin','chassisNo','engineNo','bodyColor','activityCategoryId','plateTypeId',
+    'cylinders','axles','wheels','vin','chassisNo','engineNo','bodyColor','activityCategoryId','plateTypeId',
     'inspectionDate','greenCardDate','isContainer',
     'insuranceCompanyId','insurancePolicyNo','insuranceIssueDate','insuranceValidDate',
     'techInspectSerial','techInspectIssueDate','techInspectValidDate',
@@ -930,7 +947,10 @@ export default function IssueLicense({ user }) {
         try {
           // Use logged-in user's national code to find their company
           const userNationalCode = user?.nationalCode || start.nationalCode
-          const { data } = await api.get(`/api/issue/company/by-owner/${userNationalCode}`)
+
+          const companynationalCode=companyInfo?.nationalCode || start.nationalCode
+         // const { data } = await api.get(`/api/issue/company/by-owner/${userNationalCode}`)
+         const { data } = await api.get(`/api/issue/company/by-owner/${companynationalCode}`)
           if (data && data.company) {
             // Auto-load company information
             setCompanyInfo({
@@ -1531,9 +1551,12 @@ export default function IssueLicense({ user }) {
                   <input type="text" value={companyInfo.mainActivity} onChange={(e) => setCompanyInfo({ ...companyInfo, mainActivity: e.target.value })} placeholder="فعالیت اصلی" />
                   
                   <label>رسته فعالیت</label>
-                  <select value={companyInfo.activityFieldId} onChange={(e) => setCompanyInfo({ ...companyInfo, activityFieldId: e.target.value })}>
+                  <select value={String(companyInfo.activityFieldId || '')} onChange={(e) => setCompanyInfo({ ...companyInfo, activityFieldId: e.target.value })}>
                     <option value="">انتخاب کنید</option>
-                    {lkActivityFields.map(af => <option key={af.Id} value={af.Id}>{af.Name}</option>)}
+                    {companyInfo.activityFieldId && !lkActivityFields.some(af => String(af.Id ?? af.ID) === String(companyInfo.activityFieldId)) && (
+                      <option value={String(companyInfo.activityFieldId)}>{companyInfo.activityFieldName || companyInfo.activityFieldId}</option>
+                    )}
+                    {lkActivityFields.map(af => <option key={af.Id || af.ID} value={String(af.Id ?? af.ID)}>{af.Name || af.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -2226,6 +2249,10 @@ export default function IssueLicense({ user }) {
             <input value={vehicle.axles} onChange={e => setVehicle(v => ({ ...v, axles: e.target.value }))} placeholder="مثال: 2" />
             {vehTriedNext && !vehicle.axles?.trim() && <div className="error-text">تعداد محور باید خالی نباشد</div>}
 
+            <label>تعداد چرخ</label>
+            <input value={vehicle.wheels} onChange={e => setVehicle(v => ({ ...v, wheels: e.target.value }))} placeholder="مثال: 4" />
+            {vehTriedNext && !String(vehicle.wheels || '').trim() && <div className="error-text">تعداد چرخ باید خالی نباشد</div>}
+
             <label>شماره VIN</label>
             <input value={vehicle.vin} onChange={e => setVehicle(v => ({ ...v, vin: e.target.value }))} placeholder="مثال: IR-XXXXXXXX"  disabled />
             {vehTriedNext && !vehicle.vin?.trim() && <div className="error-text">شماره VIN باید خالی نباشد</div>}
@@ -2243,22 +2270,14 @@ export default function IssueLicense({ user }) {
             {vehTriedNext && !vehicle.bodyColor?.trim() && <div className="error-text">رنگ بدنه باید خالی نباشد</div>}
 
             <label>رسته فعالیت</label>
-            <select value={vehicle.activityCategoryId} onChange={e => setVehicle(v => ({ ...v, activityCategoryId: e.target.value }))}>
+            <select value={String(vehicle.activityCategoryId || '')} onChange={e => setVehicle(v => ({ ...v, activityCategoryId: e.target.value }))}>
               <option value="">انتخاب کنید...</option>
-              {lkActivityCats.map(x => (<option key={x.Id || x.ID} value={(x.Id ?? x.ID)}>{x.Name || x.name}</option>))}
+              {vehicle.activityCategoryId && !lkActivityCats.some(x => String(x.Id ?? x.ID) === String(vehicle.activityCategoryId)) && (
+                <option value={String(vehicle.activityCategoryId)}>{vehicle.activityCategoryName || vehicle.activityCategoryId}</option>
+              )}
+              {lkActivityCats.map(x => (<option key={x.Id || x.ID} value={String(x.Id ?? x.ID)}>{x.Name || x.name}</option>))}
             </select>
             {vehTriedNext && !vehicle.activityCategoryId?.toString().trim() && <div className="error-text">رسته فعالیت باید انتخاب شود</div>}
-
-            <label>کانتینر دارد؟</label>
-            <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-              <label style={{ display:'flex', gap:6, alignItems:'center', margin:0 }}>
-                <input type="radio" name="isContainer" checked={vehicle.isContainer === 'yes'} onChange={() => setVehicle(v => ({ ...v, isContainer: 'yes' }))} /> بلی
-              </label>
-              <label style={{ display:'flex', gap:6, alignItems:'center', margin:0 }}>
-                <input type="radio" name="isContainer" checked={vehicle.isContainer === 'no'} onChange={() => setVehicle(v => ({ ...v, isContainer: 'no' }))} /> خیر
-              </label>
-            </div>
-            {vehTriedNext && !vehicle.isContainer?.trim() && <div className="error-text">این فیلد باید انتخاب شود</div>}
 
             {/* Plate Type and Plate on the same row */}
             <label>نوع پلاک</label>
@@ -2318,7 +2337,7 @@ export default function IssueLicense({ user }) {
               <div className="error-text">همه قسمت‌های پلاک الزامی است</div>
             )}
 
-            {/* Move inspection date and green card date to last row */}
+            {/* Move inspection date, green card date, and container to last row */}
             <br />
             <label>تاریخ بازدید</label>
             <div style={{ gridColumn: 'span 2' }}>
@@ -2328,7 +2347,17 @@ export default function IssueLicense({ user }) {
             <div style={{ gridColumn: 'span 2' }}>
               <ManualDateInput value={vehicle.greenCardDate} onChange={val => setVehicle(v => ({ ...v, greenCardDate: val }))} />
             </div>
+            <label>کانتینر دارد؟</label>
+            <div style={{ display:'flex', gap:16, alignItems:'center' }}>
+              <label style={{ display:'flex', gap:6, alignItems:'center', margin:0 }}>
+                <input type="radio" name="isContainer" checked={vehicle.isContainer === 'yes'} onChange={() => setVehicle(v => ({ ...v, isContainer: 'yes' }))} /> بلی
+              </label>
+              <label style={{ display:'flex', gap:6, alignItems:'center', margin:0 }}>
+                <input type="radio" name="isContainer" checked={vehicle.isContainer === 'no'} onChange={() => setVehicle(v => ({ ...v, isContainer: 'no' }))} /> خیر
+              </label>
+            </div>
             {vehTriedNext && (!vehicle.inspectionDate?.trim() || !vehicle.greenCardDate?.trim()) && <div className="error-text">تاریخ بازدید و تاریخ برگ سبز باید کامل باشند</div>}
+            {vehTriedNext && !vehicle.isContainer?.trim() && <div className="error-text">این فیلد باید انتخاب شود</div>}
 
             <hr className="section-sep" />
             <h4 className="section-title">سایر اطلاعات خودرو</h4>

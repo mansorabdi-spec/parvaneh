@@ -2,10 +2,14 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 
 export default function AdminApprovalFlow() {
+  const [mainSection, setMainSection] = useState('issue') // 'issue' or 'renewal'
   const [activeTab, setActiveTab] = useState('Activity') // 'Activity', 'Employment', or 'Exploitation'
   const [activitySteps, setActivitySteps] = useState([])
   const [employmentSteps, setEmploymentSteps] = useState([])
   const [exploitationSteps, setExploitationSteps] = useState([])
+  const [activityRenewalSteps, setActivityRenewalSteps] = useState([])
+  const [employmentRenewalSteps, setEmploymentRenewalSteps] = useState([])
+  const [exploitationRenewalSteps, setExploitationRenewalSteps] = useState([])
   const [roles, setRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -14,15 +18,21 @@ export default function AdminApprovalFlow() {
     setLoading(true)
     setError('')
     try {
-      const [activityFlow, employmentFlow, exploitationFlow, allRoles] = await Promise.all([
+      const [activityFlow, employmentFlow, exploitationFlow, activityRenewalFlow, employmentRenewalFlow, exploitationRenewalFlow, allRoles] = await Promise.all([
         api.get('/api/approvals/flow?licenseType=Activity'),
         api.get('/api/approvals/flow?licenseType=Employment'),
         api.get('/api/approvals/flow?licenseType=Exploitation'),
+        api.get('/api/approvals/flow?licenseType=Activity_Renewal'),
+        api.get('/api/approvals/flow?licenseType=Employment_Renewal'),
+        api.get('/api/approvals/flow?licenseType=Exploitation_Renewal'),
         api.get('/api/users/roles')
       ])
       setActivitySteps(activityFlow.data)
       setEmploymentSteps(employmentFlow.data)
       setExploitationSteps(exploitationFlow.data)
+      setActivityRenewalSteps(activityRenewalFlow.data)
+      setEmploymentRenewalSteps(employmentRenewalFlow.data)
+      setExploitationRenewalSteps(exploitationRenewalFlow.data)
       setRoles(allRoles.data.map(r => r.Name))
     } catch (e) {
       setError(e?.response?.data?.message || 'Failed to load approval flows')
@@ -31,16 +41,39 @@ export default function AdminApprovalFlow() {
 
   useEffect(() => { load() }, [])
 
-  // Get current steps based on active tab
-  const steps = activeTab === 'Activity' ? activitySteps : activeTab === 'Employment' ? employmentSteps : exploitationSteps
-  const setSteps = activeTab === 'Activity' ? setActivitySteps : activeTab === 'Employment' ? setEmploymentSteps : setExploitationSteps
+  // Get current steps based on active tab and section
+  const getSteps = (tab, section) => {
+    if (section === 'renewal') {
+      if (tab === 'Activity') return activityRenewalSteps
+      if (tab === 'Employment') return employmentRenewalSteps
+      if (tab === 'Exploitation') return exploitationRenewalSteps
+    }
+    if (tab === 'Activity') return activitySteps
+    if (tab === 'Employment') return employmentSteps
+    if (tab === 'Exploitation') return exploitationSteps
+  }
+
+  const setSteps = (tab, section, value) => {
+    if (section === 'renewal') {
+      if (tab === 'Activity') setActivityRenewalSteps(value)
+      if (tab === 'Employment') setEmploymentRenewalSteps(value)
+      if (tab === 'Exploitation') setExploitationRenewalSteps(value)
+    } else {
+      if (tab === 'Activity') setActivitySteps(value)
+      if (tab === 'Employment') setEmploymentSteps(value)
+      if (tab === 'Exploitation') setExploitationSteps(value)
+    }
+  }
+
+  const steps = getSteps(activeTab, mainSection)
+  const setStepsCurrent = (value) => setSteps(activeTab, mainSection, value)
 
   const addStep = () => {
     const maxOrder = steps.reduce((m, s) => Math.max(m, s.StepOrder), 0)
-    setSteps([...steps, { StepOrder: maxOrder + 1, RoleName: roles[0] || 'Admin' }])
+    setStepsCurrent([...steps, { StepOrder: maxOrder + 1, RoleName: roles[0] || 'Admin' }])
   }
-  const removeStep = (order) => setSteps(steps.filter(s => s.StepOrder !== order))
-  const changeRole = (order, role) => setSteps(steps.map(s => s.StepOrder === order ? { ...s, RoleName: role } : s))
+  const removeStep = (order) => setStepsCurrent(steps.filter(s => s.StepOrder !== order))
+  const changeRole = (order, role) => setStepsCurrent(steps.map(s => s.StepOrder === order ? { ...s, RoleName: role } : s))
   const moveUp = (order) => {
     const i = steps.findIndex(s => s.StepOrder === order)
     if (i <= 0) return
@@ -48,7 +81,7 @@ export default function AdminApprovalFlow() {
     const tmp = swapped[i-1].StepOrder
     swapped[i-1].StepOrder = swapped[i].StepOrder
     swapped[i].StepOrder = tmp
-    setSteps(swapped.sort((a,b) => a.StepOrder - b.StepOrder))
+    setStepsCurrent(swapped.sort((a,b) => a.StepOrder - b.StepOrder))
   }
   const moveDown = (order) => {
     const i = steps.findIndex(s => s.StepOrder === order)
@@ -57,18 +90,41 @@ export default function AdminApprovalFlow() {
     const tmp = swapped[i+1].StepOrder
     swapped[i+1].StepOrder = swapped[i].StepOrder
     swapped[i].StepOrder = tmp
-    setSteps(swapped.sort((a,b) => a.StepOrder - b.StepOrder))
+    setStepsCurrent(swapped.sort((a,b) => a.StepOrder - b.StepOrder))
+  }
+
+  const getLicenseType = (tab, section) => {
+    if (section === 'renewal') {
+      if (tab === 'Activity') return 'Activity_Renewal'
+      if (tab === 'Employment') return 'Employment_Renewal'
+      if (tab === 'Exploitation') return 'Exploitation_Renewal'
+    }
+    if (tab === 'Activity') return 'Activity'
+    if (tab === 'Employment') return 'Employment'
+    if (tab === 'Exploitation') return 'Exploitation'
+  }
+
+  const getLicenseTypeName = (tab, section) => {
+    if (section === 'renewal') {
+      if (tab === 'Activity') return 'تمدید پروانه فعالیت'
+      if (tab === 'Employment') return 'تمدید پروانه اشتغال'
+      if (tab === 'Exploitation') return 'تمدید پروانه بهره برداری'
+    }
+    if (tab === 'Activity') return 'پروانه فعالیت'
+    if (tab === 'Employment') return 'پروانه اشتغال'
+    if (tab === 'Exploitation') return 'پروانه بهره برداری'
   }
 
   const save = async () => {
     try {
-      const currentSteps = activeTab === 'Activity' ? activitySteps : activeTab === 'Employment' ? employmentSteps : exploitationSteps
+      const currentSteps = getSteps(activeTab, mainSection)
+      const licenseType = getLicenseType(activeTab, mainSection)
       const payload = { 
-        licenseType: activeTab,
+        licenseType,
         steps: currentSteps.map(s => ({ stepOrder: s.StepOrder, roleName: s.RoleName })) 
       }
       await api.post('/api/approvals/flow', payload)
-      const licenseTypeName = activeTab === 'Activity' ? 'پروانه فعالیت' : activeTab === 'Employment' ? 'پروانه اشتغال' : 'پروانه بهره برداری'
+      const licenseTypeName = getLicenseTypeName(activeTab, mainSection)
       alert(`فرآیند تایید ${licenseTypeName} ذخیره شد`)
       await load() // Reload to ensure all flows are fresh
     } catch (e) {
@@ -83,7 +139,42 @@ export default function AdminApprovalFlow() {
     <div className="card">
       <h2>مدیریت فرآیند تایید</h2>
       
-      {/* Tabs for License Types */}
+      {/* Main Section Tabs: Issue vs Renewal */}
+      <div style={{ marginBottom: 30 }}>
+        <button
+          onClick={() => setMainSection('issue')}
+          style={{
+            padding: '12px 30px',
+            marginRight: 10,
+            background: mainSection === 'issue' ? '#3b82f6' : '#f3f4f6',
+            color: mainSection === 'issue' ? 'white' : '#374151',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontWeight: mainSection === 'issue' ? 'bold' : 'normal',
+            fontSize: '16px'
+          }}
+        >
+          📋 فرآیند تایید صدور پروانه
+        </button>
+        <button
+          onClick={() => setMainSection('renewal')}
+          style={{
+            padding: '12px 30px',
+            background: mainSection === 'renewal' ? '#8b5cf6' : '#f3f4f6',
+            color: mainSection === 'renewal' ? 'white' : '#374151',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontWeight: mainSection === 'renewal' ? 'bold' : 'normal',
+            fontSize: '16px'
+          }}
+        >
+          🔄 فرآیند تایید تمدید پروانه
+        </button>
+      </div>
+
+      {/* Sub Tabs for License Types */}
       <div style={{ marginBottom: 20, borderBottom: '2px solid #e0e0e0' }}>
         <button
           onClick={() => setActiveTab('Activity')}
@@ -99,7 +190,7 @@ export default function AdminApprovalFlow() {
             fontSize: '14px'
           }}
         >
-          فرآیند تایید پروانه فعالیت
+          پروانه فعالیت
         </button>
         <button
           onClick={() => setActiveTab('Employment')}
@@ -115,7 +206,7 @@ export default function AdminApprovalFlow() {
             fontSize: '14px'
           }}
         >
-          فرآیند تایید پروانه اشتغال
+          پروانه اشتغال
         </button>
         <button
           onClick={() => setActiveTab('Exploitation')}
@@ -130,12 +221,15 @@ export default function AdminApprovalFlow() {
             fontSize: '14px'
           }}
         >
-          فرآیند تایید پروانه بهره برداری
+          پروانه بهره برداری
         </button>
       </div>
 
-      <h3 style={{ marginBottom: 16, color: activeTab === 'Activity' ? '#3b82f6' : activeTab === 'Employment' ? '#10b981' : '#f59e0b' }}>
-        {activeTab === 'Activity' ? 'پروانه فعالیت' : activeTab === 'Employment' ? 'پروانه اشتغال' : 'پروانه بهره برداری'}
+      <h3 style={{ marginBottom: 16 }}>
+        {mainSection === 'issue' 
+          ? (activeTab === 'Activity' ? 'فرآیند تایید صدور ' : activeTab === 'Employment' ? 'فرآیند تایید صدور ' : 'فرآیند تایید صدور ') + getLicenseTypeName(activeTab, mainSection).replace('تمدید ', '')
+          : getLicenseTypeName(activeTab, mainSection)
+        }
       </h3>
       
       <button onClick={addStep} style={{ marginBottom: 12 }}>افزودن مرحله</button>

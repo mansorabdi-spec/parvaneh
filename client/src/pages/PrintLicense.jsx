@@ -65,6 +65,48 @@ function AutoFitText({ children, baseFontSize = 22, minFontSize = 8, style = {} 
   )
 }
 
+// Keep "جهت انجام سرویس" and "تحت نظارت" on one line.
+// Shrink this line by at most 30%; only then let the overflow wrap.
+function ServiceSupervisionLine({ activityName, supervisorName, baseFontSize = 15.984 }) {
+  const lineRef = useRef(null)
+
+  useEffect(() => {
+    const fit = () => {
+      const el = lineRef.current
+      if (!el || el.clientWidth === 0) return
+
+      const minFontSize = baseFontSize * 0.7
+      el.style.whiteSpace = 'nowrap'
+      let size = baseFontSize
+      el.style.fontSize = `${size}px`
+
+      while (size > minFontSize && el.scrollWidth > el.clientWidth) {
+        size = Math.max(minFontSize, Math.round((size - 0.25) * 100) / 100)
+        el.style.fontSize = `${size}px`
+      }
+
+      el.style.whiteSpace = el.scrollWidth > el.clientWidth + 1 ? 'normal' : 'nowrap'
+    }
+
+    fit()
+    const timers = [50, 150, 400].map((ms) => setTimeout(fit, ms))
+    window.addEventListener('resize', fit)
+    window.addEventListener('beforeprint', fit)
+    return () => {
+      timers.forEach(clearTimeout)
+      window.removeEventListener('resize', fit)
+      window.removeEventListener('beforeprint', fit)
+    }
+  }, [activityName, supervisorName, baseFontSize])
+
+  return (
+    <p ref={lineRef} className="service-line">
+      جهت انجام سرویس <span className="db-value">{activityName || 'حمل بار عمومی'}</span>
+      {supervisorName ? <> تحت نظارت <span className="db-value">{supervisorName}</span></> : null}
+    </p>
+  )
+}
+
 export default function PrintLicense() {
   const { requestId } = useParams()
   const navigate = useNavigate()
@@ -96,6 +138,10 @@ export default function PrintLicense() {
       
       setData(response)
       setError('')
+      console.log('📄 Full response:', JSON.stringify(response, null, 2))
+      console.log('📄 request object:', response?.request)
+      console.log('📄 renewalDate value:', response?.request?.renewalDate)
+      console.log('📄 renewalDate type:', typeof response?.request?.renewalDate)
     } catch (e) {
       console.error('Error loading license data:', e)
       setError(e?.response?.data?.message || 'خطا در بارگذاری اطلاعات پروانه')
@@ -272,18 +318,18 @@ export default function PrintLicense() {
                 <td className="header-cell info-cell">
                   <table className="info-table">
                     <tbody>
-                      <tr>
+                      <tr className="license-no-row">
                         <td className="info-label">شماره پروانه</td>
                         <td className="info-value"><span className="db-value1">{toFarsiNumber(request.trackingNo)}</span></td>
                       </tr>
                       <tr>
                         <td className="info-label">تاریخ صدور</td>
-                        <td className="info-value"><span className="db-value1">{formatDate(request.createdAt)}</span></td>
+                        <td className="info-value"><span className="db-value1">{request.issueDate ? toFarsiNumber(request.issueDate) : formatDate(request.createdAt)}</span></td>
                       </tr>
                    
                       <tr>
                         <td className="info-label">تاریخ تمدید </td>
-                        <td className="info-value">________</td>
+                        <td className="info-value"><span className="db-value1">{toFarsiNumber(data?.request?.renewalDate) || '________'}</span></td>
                       </tr>
                       <tr>
                         <td className="info-label">مدت اعتبار</td>
@@ -361,7 +407,7 @@ export default function PrintLicense() {
               <tbody>
                 <tr>
                   <td style={{ border: 'none', padding: '4px 0', fontSize: '15.984px', textAlign: 'justify', textAlignLast: 'justify' }}>
-                    <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>تعداد محور</span>   <span className="db-value">{toFarsiNumber(vehicle?.Axles) || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>تعداد چرخ</span>   <span className="db-value">{toFarsiNumber(vehicle?.Axles * 2) || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>رنگ بدنه</span>   <span className="db-value">{vehicle?.BodyColor || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>به شماره انتظامی</span>   <span className="db-value">{vehicle?.PlateSerial2 && vehicle?.PlateThreeDigits && vehicle?.PlateLetter && vehicle?.PlateRegion2
+                    <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>تعداد محور</span>   <span className="db-value">{toFarsiNumber(vehicle?.Axles) || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>تعداد چرخ</span>   <span className="db-value">{toFarsiNumber(vehicle?.Wheels) || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>رنگ بدنه</span>   <span className="db-value">{vehicle?.BodyColor || ''}</span>   <span className="vehicle-label" style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>به شماره انتظامی</span>   <span className="db-value">{vehicle?.PlateSerial2 && vehicle?.PlateThreeDigits && vehicle?.PlateLetter && vehicle?.PlateRegion2
                         ? `${toFarsiNumber(vehicle.PlateRegion2)} / ${toFarsiNumber(vehicle.PlateThreeDigits)} ${vehicle.PlateLetter} ${toFarsiNumber(vehicle.PlateSerial2)}`
                         : ''}</span>
                   </td>
@@ -383,8 +429,10 @@ export default function PrintLicense() {
 
           {/* Company Info */}
           <div className="license-company indented-section">
-            
-            <p>جهت انجام سرویس   <span className="db-value">{vehicle?.ActivityCategoryName || 'حمل بار عمومی'}</span></p>
+            <ServiceSupervisionLine
+              activityName={vehicle?.ActivityCategoryName}
+              supervisorName={request.supervisorCompanyName}
+            />
           </div>
 
           {/* Final Note */}
@@ -622,6 +670,10 @@ export default function PrintLicense() {
           font-size: 15px;
           color: #000;
           white-space: nowrap;
+        }
+
+        .info-table tr.license-no-row td {
+          padding-top: 0.5cm;
         }
 
         .info-label {
@@ -862,6 +914,12 @@ export default function PrintLicense() {
 
         .license-company p {
           margin: 3px 0;
+        }
+
+        .service-line {
+          width: 100%;
+          text-align: right;
+          line-height: 1.8;
         }
 
         .company-name {

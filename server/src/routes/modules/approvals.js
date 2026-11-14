@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { authRequired } from '../../middleware/auth.js';
 import { requireRole } from '../../middleware/auth.js';
 import { requireAnyPermission } from '../../middleware/permission.js';
+import { excludeRole } from '../../middleware/roleExempt.js';
 import { getFlow, setFlow, myTasks, decideApproval } from '../../controllers/approvals.controller.js';
 
 const router = Router();
 
-// Admin can configure the flow
-router.get('/flow', authRequired, requireRole('Admin'), getFlow);
-router.post('/flow', authRequired, requireRole('Admin'), setFlow);
+// Admin can configure the flow (restricted for SuperAdmin)
+router.get('/flow', authRequired, requireRole('Admin'), excludeRole('superadmin'), getFlow);
+router.post('/flow', authRequired, requireRole('Admin'), excludeRole('superadmin'), setFlow);
 
 // Approvers (Officer/Admin) can view tasks and decide
 // Users with approve or reject permission can view their tasks

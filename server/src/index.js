@@ -4,8 +4,12 @@ import { fileURLToPath } from 'url';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import { getPool, DB_ERROR_MESSAGE, closePool, getPoolStats } from './lib/db.js';
+import { getPool, DB_ERROR_MESSAGE, closePool, getPoolStats, cleanupStaleConnections, getPoolWithRetry } from './lib/db.js';
 import apiRouter from './routes/index.js';
+import { ensureRenewalWindowLookup } from './controllers/lookups.controller.js';
+import { ensureComprehensiveReportPage } from './lib/comprehensiveReport.js';
+import { ensureApplicantLicensePages } from './lib/ensureApplicantLicensePages.js';
+import { renameDeputyAdminRole } from './lib/renameSuperadminRole.js';
 import { dbErrorHandler } from './middleware/dbErrorHandler.js';
 
 if (process.env.NODE_ENV === 'production') {
@@ -62,14 +66,56 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// Admin endpoint to cleanup stale connections (called automatically when errors occur)
+app.post('/api/admin/cleanup-pool', async (req, res) => {
+  try {
+    await cleanupStaleConnections();
+    res.json({ 
+      success: true, 
+      message: 'Connection pool cleaned up successfully' 
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      message: err.message || 'Failed to cleanup pool' 
+    });
+  }
+});
+
 app.use('/api', apiRouter);
 
 // Database error handler middleware - must be after all routes
 app.use(dbErrorHandler);
 
 const server = app.listen(port, async () => {
+  server.requestTimeout = 360000;
+  server.headersTimeout = 370000;
+  server.timeout = 0;
   try {
     await getPool();
+    try {
+      await ensureRenewalWindowLookup();
+    } catch (seedError) {
+      console.error('✗ Failed to ensure renewal window lookup:', seedError.message);
+    }
+    try {
+      const pool = await getPool();
+      await renameDeputyAdminRole(pool);
+    } catch (renameError) {
+      console.error('✗ Failed to rename deputy admin role:', renameError.message);
+    }
+    try {
+      const pool = await getPool();
+      await ensureComprehensiveReportPage(pool);
+    } catch (pageError) {
+      console.error('✗ Failed to ensure comprehensive report page:', pageError.message);
+    }
+    try {
+      const pool = await getPool();
+      await ensureApplicantLicensePages(pool);
+    } catch (licensePageError) {
+      console.error('✗ Failed to ensure applicant renew/change pages:', licensePageError.message);
+    }
     const env = process.env.NODE_ENV || 'development';
     console.log(`✓ Server is running on port ${port}`);
     console.log(`✓ Environment: ${env}`);

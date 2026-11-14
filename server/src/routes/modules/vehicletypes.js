@@ -8,7 +8,7 @@ import {
   updateVehicleType, 
   deleteVehicleType 
 } from '../../controllers/vehicletypes.controller.js'
-import { authRequired, requireRole } from '../../middleware/auth.js'
+import { authRequired, requireAnyRole } from '../../middleware/auth.js'
 
 const router = express.Router()
 
@@ -18,9 +18,9 @@ router.get('/systems/all', authRequired, getAllSystems)
 router.get('/:vehicleTypeId/systems', authRequired, getSystemsByVehicleType)
 router.get('/systems/:systemId/tips', authRequired, getTipsBySystem)
 
-// Admin-only routes
-router.post('/', authRequired, requireRole('Admin'), createVehicleType)
-router.put('/:id', authRequired, requireRole('Admin'), updateVehicleType)
-router.delete('/:id', authRequired, requireRole('Admin'), deleteVehicleType)
+// Admin and superadmin routes
+router.post('/', authRequired, requireAnyRole(['Admin', 'superadmin']), createVehicleType)
+router.put('/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), updateVehicleType)
+router.delete('/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), deleteVehicleType)
 
 export default router

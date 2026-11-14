@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRequired, requireRole } from '../../middleware/auth.js';
+import { excludeRole } from '../../middleware/roleExempt.js';
 import {
   getAllPages,
   getRolesWithPermissions,
@@ -14,29 +15,29 @@ import {
 
 const router = Router();
 
-// Get all pages (Admin only)
-router.get('/pages', authRequired, requireRole('Admin'), getAllPages);
+// Get all pages (Admin only, restricted for SuperAdmin)
+router.get('/pages', authRequired, requireRole('Admin'), excludeRole('superadmin'), getAllPages);
 
-// Create a new page (Admin only)
-router.post('/pages', authRequired, requireRole('Admin'), createPage);
+// Create a new page (Admin only, restricted for SuperAdmin)
+router.post('/pages', authRequired, requireRole('Admin'), excludeRole('superadmin'), createPage);
 
-// Update a page (Admin only)
-router.put('/pages/:pageId', authRequired, requireRole('Admin'), updatePage);
+// Update a page (Admin only, restricted for SuperAdmin)
+router.put('/pages/:pageId', authRequired, requireRole('Admin'), excludeRole('superadmin'), updatePage);
 
-// Delete a page (Admin only)
-router.delete('/pages/:pageId', authRequired, requireRole('Admin'), deletePage);
+// Delete a page (Admin only, restricted for SuperAdmin)
+router.delete('/pages/:pageId', authRequired, requireRole('Admin'), excludeRole('superadmin'), deletePage);
 
-// Get all roles with their permissions (Admin only)
-router.get('/roles', authRequired, requireRole('Admin'), getRolesWithPermissions);
+// Get all roles with their permissions (Admin only, restricted for SuperAdmin)
+router.get('/roles', authRequired, requireRole('Admin'), excludeRole('superadmin'), getRolesWithPermissions);
 
-// Get permissions for a specific role (Admin only)
-router.get('/roles/:roleId', authRequired, requireRole('Admin'), getRolePermissions);
+// Get permissions for a specific role (Admin only, restricted for SuperAdmin)
+router.get('/roles/:roleId', authRequired, requireRole('Admin'), excludeRole('superadmin'), getRolePermissions);
 
-// Update all permissions for a role (Admin only)
-router.put('/roles/:roleId', authRequired, requireRole('Admin'), updateRolePermissions);
+// Update all permissions for a role (Admin only, restricted for SuperAdmin)
+router.put('/roles/:roleId', authRequired, requireRole('Admin'), excludeRole('superadmin'), updateRolePermissions);
 
-// Set a single permission for a role (Admin only)
-router.put('/roles/:roleId/pages/:pageId', authRequired, requireRole('Admin'), setRolePermission);
+// Set a single permission for a role (Admin only, restricted for SuperAdmin)
+router.put('/roles/:roleId/pages/:pageId', authRequired, requireRole('Admin'), excludeRole('superadmin'), setRolePermission);
 
 // Get accessible pages for the current user
 router.get('/my-pages', authRequired, getMyAccessiblePages);

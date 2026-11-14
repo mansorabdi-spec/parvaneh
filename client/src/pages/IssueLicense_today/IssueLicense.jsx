@@ -69,7 +69,7 @@ export default function IssueLicense({ user }) {
     nationality: 'ایران',
     nationalCode: user?.nationalCode || '',
     vin: '',
-    consent: false
+    consent: true
   })
   
   // Ownership type

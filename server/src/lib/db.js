@@ -6,6 +6,10 @@ let lastHealthCheck = null;
 let consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 3;
 
+// Track active connections for debugging
+const activeConnections = new Set();
+let poolClosed = false;
+
 // Standardized database error message in Persian
 export const DB_ERROR_MESSAGE = 'بنا به مشکلی که در سرور بوجود آمده امکان دسترسی به دیتابیس وجود ندارد ، لطفا چند ثانیه بعد امتحان فرمایید اگر تا 5 دقیقه مشکل حل نشد با پشتیبانی تماس بگیرید . از بابت مشکل بوجود آمده عذرخواهی می نماییم';
 
@@ -37,10 +41,11 @@ export function getConfig() {
     pool: {
       max: 50, // Increased from 10 to handle more concurrent requests
       min: 5, // Keep minimum connections alive
-      idleTimeoutMillis: 300000, // 5 minutes (increased from 30 seconds)
-      acquireTimeoutMillis: 60000, // 60 seconds to acquire connection from pool
+      idleTimeoutMillis: 300000, // 5 minutes
+      acquireTimeoutMillis: 30000, // 30 seconds to acquire connection from pool
+      createTimeoutMillis: 30000, // 30 seconds to create a new connection
     },
-    connectionTimeout: 60000, // 60 seconds for initial connection
+    connectionTimeout: 30000, // 30 seconds for initial connection
     requestTimeout: 120000, // 120 seconds for queries (some reports may take longer)
   };
 
@@ -166,12 +171,18 @@ function startHealthCheck() {
       if (!poolPromise) return;
       
       const pool = await poolPromise;
+      
+      // Check pool stats to detect connection leaks
+      const stats = pool.request().connectionPool?.stats;
+      if (stats) {
+        console.log(`[Pool Stats] Active: ${stats.activeConnections}, Idle: ${stats.idleConnections}, Pending: ${stats.pendingRequests}`);
+      }
+      
       const result = await pool.request().query('SELECT 1 AS HealthCheck');
       
       if (result && result.recordset && result.recordset.length > 0) {
         lastHealthCheck = new Date();
         consecutiveFailures = 0;
-        // console.log('Database health check: OK');
       }
     } catch (error) {
       console.error('Database health check failed:', error.message);
@@ -182,7 +193,7 @@ function startHealthCheck() {
         resetPool();
       }
     }
-  }, 60000); // Check every 60 seconds
+  }, 30000); // Check every 30 seconds
 }
 
 // Get pool statistics
@@ -198,6 +209,7 @@ export function getPoolStats() {
 // Graceful shutdown
 export async function closePool() {
   console.log('Closing database connection pool...');
+  poolClosed = true;
   
   if (poolHealthCheckInterval) {
     clearInterval(poolHealthCheckInterval);
@@ -214,6 +226,71 @@ export async function closePool() {
     }
     poolPromise = null;
   }
+}
+
+// Force cleanup stale connections in the pool
+export async function cleanupStaleConnections() {
+  if (!poolPromise || poolClosed) return;
+  
+  try {
+    const pool = await poolPromise;
+    
+    // Check if pool is in a valid state before attempting cleanup
+    if (pool && !pool.closed) {
+      // Close and recreate the pool to clear stale connections
+      console.log('[Pool] Cleaning up stale connections...');
+      
+      try {
+        await pool.close();
+      } catch (e) {
+        console.error('[Pool] Error during cleanup close:', e.message);
+      }
+      
+      poolPromise = null;
+      
+      // Recreate the pool
+      try {
+        poolPromise = sql.connect(getConfig());
+        const newPool = await poolPromise;
+        console.log('[Pool] Stale connections cleaned up, new pool created');
+        startHealthCheck();
+      } catch (e) {
+        console.error('[Pool] Error recreating pool after cleanup:', e.message);
+        poolPromise = null;
+        throw e;
+      }
+    }
+  } catch (error) {
+    console.error('[Pool] Error in cleanupStaleConnections:', error.message);
+    throw error;
+  }
+}
+
+// Get pool with automatic retry and stale connection handling
+export async function getPoolWithRetry(maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await getPool();
+    } catch (error) {
+      if (error.code === 'EINVALIDSTATE' || error.code === 'ECONNCLOSED') {
+        console.warn(`[Pool] Connection error (attempt ${i + 1}/${maxRetries}): ${error.message}`);
+        
+        if (i < maxRetries - 1) {
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+          
+          try {
+            await cleanupStaleConnections();
+          } catch (cleanupError) {
+            console.error('[Pool] Failed to cleanup stale connections:', cleanupError.message);
+          }
+        }
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error('Failed to get pool connection after retries');
 }
 
 // Helper function to execute queries with automatic connection cleanup

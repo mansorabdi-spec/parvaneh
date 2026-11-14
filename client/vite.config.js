@@ -10,12 +10,14 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
-          target: env.VITE_API_BASE_URL || 'http://localhost:4000',
+          target: env.VITE_API_BASE_URL || 'http://localhost:4001',
           changeOrigin: true,
-          secure: false
+          secure: false,
+          timeout: 240000,
+          proxyTimeout: 240000
         },
         '/health': {
-          target: env.VITE_API_BASE_URL || 'http://localhost:4000',
+          target: env.VITE_API_BASE_URL || 'http://localhost:4001',
           changeOrigin: true,
           secure: false
         }

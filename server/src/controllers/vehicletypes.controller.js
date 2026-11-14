@@ -375,17 +375,21 @@ export async function deleteVehicleType(req, res) {
         })
       }
       
-      // Log the deletion (you might want to create an audit log table)
-      await new sql.Request(transaction)
-        .input('userId', sql.Int, userId)
-        .input('vehicleTypeId', sql.Int, id)
-        .input('action', sql.NVarChar(50), 'DELETE')
-        .input('details', sql.NVarChar(1000), 
-          `حذف نوع وسیله نقلیه: ${vehicleType.VehicleTypeName}`)
-        .query(`
-          INSERT INTO AuditLog (UserID, Action, Details, CreatedAt)
-          VALUES (@userId, @action, @details, GETDATE())
-        `)
+      // Log the deletion (skip if AuditLog table doesn't exist)
+      try {
+        await new sql.Request(transaction)
+          .input('userId', sql.Int, userId)
+          .input('vehicleTypeId', sql.Int, id)
+          .input('action', sql.NVarChar(50), 'DELETE')
+          .input('details', sql.NVarChar(1000), 
+            `حذف نوع وسیله نقلیه: ${vehicleType.VehicleTypeName}`)
+          .query(`
+            INSERT INTO AuditLog (UserID, Action, Details, CreatedAt)
+            VALUES (@userId, @action, @details, GETDATE())
+          `)
+      } catch (auditErr) {
+        console.warn('⚠️ AuditLog table not found, skipping audit log:', auditErr.message);
+      }
       
       // Delete vehicle type
       await new sql.Request(transaction)

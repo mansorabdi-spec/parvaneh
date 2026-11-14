@@ -22,3 +22,15 @@ export function requireRole(roleName) {
     return res.status(403).json({ message: 'دسترسی برای این عملیات ندارید' });
   };
 }
+
+export function requireAnyRole(roleNames) {
+  return (req, res, next) => {
+    const roles = req.user?.roles || [];
+    const primary = req.user?.role;
+    // Check if primary role or any of the roles matches
+    if (roleNames.includes(primary) || roles.some(r => roleNames.includes(r))) {
+      return next();
+    }
+    return res.status(403).json({ message: 'دسترسی برای این عملیات ندارید' });
+  };
+}

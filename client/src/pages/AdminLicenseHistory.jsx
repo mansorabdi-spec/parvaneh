@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
+import { isAdminRoleName, viewerIsSuperAdminOnly } from '../lib/roleVisibility.js';
 import DateObject from 'react-date-object';
 import persian from 'react-date-object/calendars/persian';
 
@@ -13,6 +14,24 @@ const toJalali = (dateStr) => {
   } catch {
     return '-';
   }
+};
+
+const normalizeNumberLike = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+
+  const digits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const normalized = String(value)
+    .replace(/,/g, '')
+    .replace(/[۰-۹]/g, char => digits.indexOf(char))
+    .replace(/[٠-٩]/g, char => '٠١٢٣٤٥٦٧٨٩'.indexOf(char));
+
+  const number = Number(normalized);
+  return Number.isNaN(number) ? null : number;
+};
+
+const formatAmount = (value) => {
+  const number = normalizeNumberLike(value);
+  return number === null ? '-' : number.toLocaleString('fa-IR');
 };
 
 function getIsAdmin() {
@@ -286,7 +305,7 @@ function AdminLicenseHistory() {
         item.ExpiryDate || '-',
         item.Status || '-',
         item.PaidAmount !== null && item.PaidAmount !== undefined && item.PaidAmount !== '' ? String(item.PaidAmount) : '-',
-        item.CalculatedAmount !== null && item.CalculatedAmount !== undefined && item.CalculatedAmount !== '' ? String(item.CalculatedAmount) : '-',
+        formatAmount(item.CalculatedAmount),
         item.PaymentType === 'Online' ? 'آنلاین' : item.PaymentType === 'Offline' ? 'آفلاین' : '-',
         item.PaymentReceiptNo || '-',
         toJalali(item.PaymentDate),
@@ -593,14 +612,10 @@ function AdminLicenseHistory() {
                       {getStatusBadge(item.Status)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style={{ direction: 'ltr', textAlign: 'right', fontFamily: 'monospace' }}>
-                      {item.PaidAmount !== null && item.PaidAmount !== undefined && item.PaidAmount !== ''
-                        ? Number(item.PaidAmount).toLocaleString('fa-IR')
-                        : '-'}
+                      {formatAmount(item.PaidAmount)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style={{ direction: 'ltr', textAlign: 'right', fontFamily: 'monospace' }}>
-                      {item.CalculatedAmount !== null && item.CalculatedAmount !== undefined && item.CalculatedAmount !== ''
-                        ? Number(item.CalculatedAmount).toLocaleString('fa-IR')
-                        : '-'}
+                      {formatAmount(item.CalculatedAmount)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {item.PaymentType === 'Online' ? 'آنلاین' : item.PaymentType === 'Offline' ? 'آفلاین' : '-'}
@@ -609,8 +624,8 @@ function AdminLicenseHistory() {
                       {item.PaymentReceiptNo || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {item.IssuedByUsername || '-'}
-                      {item.IssuedByRole && (
+                      {item.IssuedByUsername && !(viewerIsSuperAdminOnly() && isAdminRoleName(item.IssuedByRole)) ? item.IssuedByUsername : '-'}
+                      {item.IssuedByRole && !isAdminRoleName(item.IssuedByRole) && (
                         <div className="text-xs text-gray-500">{item.IssuedByRole}</div>
                       )}
                     </td>

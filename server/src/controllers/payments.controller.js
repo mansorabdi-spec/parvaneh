@@ -85,10 +85,10 @@ export async function createOfflinePayment(req, res, next) {
       }
     }
     
-    // Get RequestID and request details from TrackingNo
+    // Get RequestID and request details from TrackingNo (use TOP 1 ORDER BY DESC to get the latest request)
     const requestResult = await pool.request()
       .input('TrackingNo', sql.NVarChar(30), value.trackingNo)
-      .query(`SELECT RequestID, Status, LicenseTypeId, TrackingNo, SubmittedByUserId FROM VehicleRequests WHERE TrackingNo = @TrackingNo`);
+      .query(`SELECT TOP 1 RequestID, Status, LicenseTypeId, TrackingNo, SubmittedByUserId FROM VehicleRequests WHERE TrackingNo = @TrackingNo ORDER BY RequestID DESC`);
     
     const requestId = requestResult.recordset.length > 0 ? requestResult.recordset[0].RequestID : null;
     const requestStatus = requestResult.recordset[0]?.Status;

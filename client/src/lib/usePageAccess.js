@@ -41,6 +41,7 @@ export function usePageAccess() {
         }
 
         console.log('📋 usePageAccess: Fetching accessible pages with token:', token.substring(0, 20) + '...');
+        setError(null);
         setLoading(true);
         const res = await fetch('/api/permissions/my-pages', {
           headers: { Authorization: `Bearer ${token}` }

@@ -516,6 +516,12 @@ export default function PrintEmploymentLicense() {
               </tbody>
             </table>
           </div>
+
+          {request.supervisorCompanyName && (
+            <div className="supervisor-footer">
+              تحت نظارت {request.supervisorCompanyName}
+            </div>
+          )}
         </div>
       </div>
 
@@ -931,6 +937,25 @@ export default function PrintEmploymentLicense() {
           color: #000; /* RGB fallback */
           font-weight: bold;
           text-align: center;
+        }
+
+        .supervisor-footer {
+          position: absolute;
+          bottom: 5px;
+          left: 8px;
+          right: 8px;
+          text-align: center;
+          font-size: 6px;
+          font-weight: bold;
+          line-height: 1.2;
+          color: #000;
+          background: rgb(253, 184, 123);
+          z-index: 40;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
         }
 
         /* Long driving license numbers: allow wrapping/constraints and slight downsizing */

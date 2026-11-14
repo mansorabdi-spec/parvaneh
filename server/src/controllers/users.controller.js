@@ -2,9 +2,36 @@ import Joi from 'joi';
 import { getPool, sql } from '../lib/db.js';
 import bcrypt from 'bcryptjs';
 
+function isAdminRoleName(name) {
+  return String(name || '').trim().toLowerCase() === 'admin';
+}
+
+async function loadRoleNames(pool, userId) {
+  const userRolesResult = await pool.request()
+    .input('userId', sql.Int, userId)
+    .query(`
+      SELECT DISTINCT r.Name AS RoleName
+      FROM (
+        SELECT @userId AS UserId, (SELECT Role FROM Users WHERE Id=@userId) AS RoleName
+        UNION ALL
+        SELECT ur.UserId, r.Name FROM UserRoles ur JOIN Roles r ON r.Id = ur.RoleId WHERE ur.UserId = @userId
+      ) x
+      JOIN Roles r ON r.Name = x.RoleName
+    `);
+  return userRolesResult.recordset.map((row) => row.RoleName);
+}
+
+async function requesterIsSuperAdminOnly(pool, userId) {
+  if (!userId) return false;
+  const userRoles = await loadRoleNames(pool, userId);
+  return userRoles.includes('superadmin') && !userRoles.some(isAdminRoleName);
+}
+
 export async function listUsers(req, res, next) {
   try {
     const pool = await getPool();
+    const isSuperAdminOnly = await requesterIsSuperAdminOnly(pool, req.user?.id);
+    
     const result = await pool.request().query(`
       SELECT u.Id, u.NationalCode, u.FullName, u.Email, u.Role AS PrimaryRole, u.IsActive, u.CreatedAt
       FROM Users u
@@ -27,7 +54,12 @@ export async function listUsers(req, res, next) {
       Roles: Array.from(new Set([u.PrimaryRole, ...(rolesMap[u.Id] || [])])).filter(Boolean)
     }));
 
-    res.json(withRoles);
+    // Superadmin must not see users who have the Admin role, even as an extra role
+    const filteredUsers = isSuperAdminOnly
+      ? withRoles.filter(u => !u.Roles.some(isAdminRoleName))
+      : withRoles;
+
+    res.json(filteredUsers);
   } catch (e) { next(e); }
 }
 
@@ -50,8 +82,11 @@ export async function setUserActive(req, res, next) {
     if (error) return res.status(400).json({ message: error.message });
     if (req.user?.id === id) return res.status(400).json({ message: 'نمی‌توانید وضعیت حساب خود را تغییر دهید' });
     const pool = await getPool();
+    if (await requesterIsSuperAdminOnly(pool, req.user?.id) && (await loadRoleNames(pool, id)).some(isAdminRoleName)) {
+      return res.status(403).json({ message: 'اجازه این عملیات را ندارید' });
+    }
     const r = await pool.request().input('Id', sql.Int, id).input('IsActive', sql.Bit, value.isActive ? 1 : 0)
-      .query('UPDATE Users SET IsActive=@IsActive OUTPUT INSERTED.Id, INSERTED.Username, INSERTED.IsActive WHERE Id=@Id');
+      .query('UPDATE Users SET IsActive=@IsActive OUTPUT INSERTED.Id, INSERTED.IsActive WHERE Id=@Id');
     if (!r.recordset[0]) return res.status(404).json({ message: 'کاربر یافت نشد' });
     res.json(r.recordset[0]);
   } catch (e) { next(e); }
@@ -61,6 +96,9 @@ export async function resetUserPassword(req, res, next) {
   try {
     const id = Number(req.params.id);
     const pool = await getPool();
+    if (await requesterIsSuperAdminOnly(pool, req.user?.id) && (await loadRoleNames(pool, id)).some(isAdminRoleName)) {
+      return res.status(403).json({ message: 'اجازه این عملیات را ندارید' });
+    }
     const userRes = await pool.request().input('Id', sql.Int, id).query('SELECT Id FROM Users WHERE Id=@Id');
     if (!userRes.recordset[0]) return res.status(404).json({ message: 'کاربر یافت نشد' });
     const hash = await bcrypt.hash('123456', 10);
@@ -80,6 +118,20 @@ export async function setUserRoles(req, res, next) {
   try {
     const { error, value } = setRolesSchema.validate(req.body);
     if (error) return res.status(400).json({ message: error.message });
+
+    // Check if requester is SuperAdmin-only (can't change user roles)
+    const requesterId = req.user?.id;
+    if (requesterId) {
+      const pool = await getPool();
+      const userRoles = await loadRoleNames(pool, requesterId);
+      const hasSuperAdmin = userRoles.includes('superadmin');
+      const hasAdmin = userRoles.some(isAdminRoleName);
+      
+      // Superadmin cannot change roles, and cannot be told that an Admin role exists
+      if (hasSuperAdmin && !hasAdmin) {
+        return res.status(403).json({ message: 'شما اجازه تغییر نقش کاربران را ندارید' });
+      }
+    }
 
     const pool = await getPool();
     const tx = new sql.Transaction(pool);
@@ -155,7 +207,8 @@ export async function listRoles(req, res, next) {
   try {
     const pool = await getPool();
     const { recordset } = await pool.request().query('SELECT Id, Name FROM Roles ORDER BY Name');
-    res.json(recordset);
+    const hideAdmin = await requesterIsSuperAdminOnly(pool, req.user?.id);
+    res.json(hideAdmin ? recordset.filter((role) => !isAdminRoleName(role.Name)) : recordset);
   } catch (e) { next(e); }
 }
 

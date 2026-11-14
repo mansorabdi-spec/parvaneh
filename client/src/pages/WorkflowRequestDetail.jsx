@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api, normalizedApiBaseUrl } from '../lib/api.js'
+import { isAdminRoleName, viewerIsSuperAdminOnly } from '../lib/roleVisibility.js'
 
 // Helper to convert English numbers to Persian
 const toFarsiNumber = (num) => {
@@ -1079,6 +1080,10 @@ export default function WorkflowRequestDetail() {
                   <div className="info-value">{vehicle.Axles || '-'}</div>
                 </div>
                 <div className="info-item">
+                  <div className="info-label">تعداد چرخ</div>
+                  <div className="info-value">{vehicle.Wheels ?? '-'}</div>
+                </div>
+                <div className="info-item">
                   <div className="info-label">تاریخ بازدید</div>
                   <div className="info-value">{vehicle.InspectionDate || '-'}</div>
                 </div>
@@ -1426,8 +1431,8 @@ export default function WorkflowRequestDetail() {
               </tr>
             </thead>
             <tbody>
-              {steps.map((step, idx) => (
-                <tr key={step.Id} style={{ borderBottom: idx < steps.length - 1 ? '1px solid #e5e7eb' : 'none' }}>
+              {steps.filter(step => !(viewerIsSuperAdminOnly() && isAdminRoleName(step.RoleName))).map((step, idx, visibleSteps) => (
+                <tr key={step.Id} style={{ borderBottom: idx < visibleSteps.length - 1 ? '1px solid #e5e7eb' : 'none' }}>
                   <td style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>{step.StepOrder}</td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>{step.RoleName}</td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>{getStatusBadge(step.Status)}</td>
@@ -1451,12 +1456,12 @@ export default function WorkflowRequestDetail() {
             </div>
           ) : (
             <div style={{ padding: '20px' }}>
-              {history.map((h, idx) => (
+              {history.filter(h => !(viewerIsSuperAdminOnly() && isAdminRoleName(h.ActionByRole))).map((h, idx, visibleHistory) => (
                 <div 
                   key={h.Id}
                   style={{ 
                     padding: '16px', 
-                    borderBottom: idx < history.length - 1 ? '1px solid #e5e7eb' : 'none',
+                    borderBottom: idx < visibleHistory.length - 1 ? '1px solid #e5e7eb' : 'none',
                     display: 'flex',
                     gap: '16px'
                   }}
@@ -1485,8 +1490,8 @@ export default function WorkflowRequestDetail() {
                        h.ActionType === 'FixDeficiency' ? 'رفع نقص - ارجاع به مرحله قبل' : h.ActionType}
                     </div>
                     <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>
-                      توسط: {h.ActionByUserFullName || h.ActionByUserName || 'سیستم'} 
-                      {h.ActionByRole && ` (${h.ActionByRole})`}
+                      توسط: {h.ActionByUserFullName || h.ActionByUserName || 'سیستم'}
+                      {h.ActionByRole && !isAdminRoleName(h.ActionByRole) && ` (${h.ActionByRole})`}
                     </div>
                     {h.Notes && (
                       <div style={{ fontSize: '13px', color: '#374151', marginTop: '8px', padding: '8px', background: '#f9fafb', borderRadius: '4px' }}>

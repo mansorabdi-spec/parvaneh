@@ -134,28 +134,27 @@ export default function FinancialPayment() {
 
         // Try to load vehicle by tracking (for activity licenses)
         if (trackingNo) {
+          // First, try to find the request by tracking number directly
+          // This ensures we get the correct request when multiple requests share the same vehicle
           try {
-            const veh = await api.get(`/api/vehicles/by-tracking/${encodeURIComponent(trackingNo)}`)
-            resolvedVehicle = veh.data || null
-            setVehicle(resolvedVehicle)
-            console.log('🚗 Vehicle data received (by tracking):', veh.data)
-            
-            // Get RequestID from vehicle/tracking data (check both cases)
-            if (!reqId) {
-              reqId = veh.data?.RequestID || veh.data?.requestId
+            const reqByTracking = await api.get(`/api/requests/by-tracking/${encodeURIComponent(trackingNo)}`)
+            if (reqByTracking.data) {
+              reqId = reqByTracking.data.RequestID
+              console.log('📋 RequestID found by tracking number:', reqId)
             }
           } catch (err) {
-            console.warn('⚠️ Vehicle not found by tracking number (might be employment license):', err.response?.status)
-            // For employment licenses, we need to get RequestID from request details first
-            // So we'll try to find the request by tracking number
+            console.warn('⚠️ Could not find request by tracking number:', err)
+          }
+          
+          // Then try to load vehicle by tracking
+          if (reqId) {
             try {
-              const reqByTracking = await api.get(`/api/requests/by-tracking/${encodeURIComponent(trackingNo)}`)
-              if (reqByTracking.data) {
-                reqId = reqByTracking.data.RequestID
-                console.log('📋 RequestID found by tracking:', reqId)
-              }
-            } catch (err2) {
-              console.warn('⚠️ Could not find request by tracking number:', err2)
+              const veh = await api.get(`/api/vehicles/by-tracking/${encodeURIComponent(trackingNo)}`)
+              resolvedVehicle = veh.data || null
+              setVehicle(resolvedVehicle)
+              console.log('🚗 Vehicle data received (by tracking):', veh.data)
+            } catch (err) {
+              console.warn('⚠️ Vehicle not found by tracking number (might be employment license):', err.response?.status)
             }
           }
         }
@@ -165,10 +164,14 @@ export default function FinancialPayment() {
           setRequestId(reqId)
           
           // Load request details (license type, operation type, etc.)
+          let loadedRequestDetails = null
           try {
             const reqDetails = await api.get(`/api/requests/${reqId}`)
+            loadedRequestDetails = reqDetails.data
+            console.log('=== REQUEST DETAILS ===', reqDetails.data)
+            console.log('=== OriginalAmount ===', reqDetails.data?.OriginalAmount, reqDetails.data?.originalAmount)
+            console.log('=== FinalAmount ===', reqDetails.data?.FinalAmount, reqDetails.data?.finalAmount)
             setRequestDetails(reqDetails.data)
-            console.log('📋 Request details loaded:', reqDetails.data)
             
             // Load applicant (buyer) information from Persons table
             // For legal entity requests, load manager info; for individual requests, load person info
@@ -296,7 +299,7 @@ export default function FinancialPayment() {
           }
           
           // Load workflow steps to check approval status
-          await loadWorkflowSteps(reqId)
+          await loadWorkflowSteps(reqId, loadedRequestDetails)
           // Load payment history for this request
           await loadPaymentHistory(reqId)
           // Load discount information
@@ -338,17 +341,22 @@ export default function FinancialPayment() {
     })()
   }, [trackingNo, stateRequestId])
 
-  const loadWorkflowSteps = async (reqId) => {
+  const loadWorkflowSteps = async (reqId, details) => {
     try {
       console.log('📋 Loading workflow steps for RequestID:', reqId)
       const response = await api.get(`/api/workflow/requests/${reqId}/steps`)
       const steps = response.data || []
       setWorkflowSteps(steps)
       console.log('✅ Workflow steps loaded:', steps)
-      
-      // Check if this is an exploitation license request
-      if (requestDetails?.LicenseTypeId === 68 || trackingNo?.startsWith('100-')) {
-        // For exploitation licenses, check if Step 2 (کارشناس تایید محل) is approved
+
+      const info = details || requestDetails
+      const operationTypeName = info?.OperationTypeName || info?.operationTypeName || ''
+      const isRenewal = String(operationTypeName).includes('تمدید')
+      const licenseTypeId = info?.LicenseTypeId ?? info?.licenseTypeId
+      const needsLocationApproval = !isRenewal && (licenseTypeId === 68 || trackingNo?.startsWith('100-'))
+
+      // Renewal shows the invoice immediately. Issuance waits for the location expert.
+      if (needsLocationApproval) {
         const step2 = steps.find(s => s.StepOrder === 2 && s.RoleName === 'کارشناس تایید محل')
         
         if (step2 && step2.Status === 'Approved') {
@@ -359,7 +367,6 @@ export default function FinancialPayment() {
           setCanAccessPayment(false)
         }
       } else {
-        // For other license types, allow payment access (existing behavior)
         setCanAccessPayment(true)
       }
     } catch (e) {
@@ -487,21 +494,29 @@ export default function FinancialPayment() {
                                    requestDetails.LicenseTypeId === 68
     
     if (isExploitationLicense && requestDetails.OriginalAmount) {
-      const amount = Number(requestDetails.OriginalAmount || 0)
-      const training = Number(trainingFee || 0)
-      // Calculate VAT from sum of amount + training fee
-      const subtotal = amount + training
-      const vat = Math.round(subtotal * 0.10)
-      const licenseTypeName = requestDetails.LicenseTypeName || 'پروانه بهره برداری'
+      let licenseTypeName = requestDetails.LicenseTypeName || 'پروانه بهره برداری'
       const operationTypeName = requestDetails.OperationTypeName || 'صدور'
       
-      // Include tonnage range in the title if available
+      // Ensure license type name always includes "پروانه" prefix
+      if (!licenseTypeName.includes('پروانه')) {
+        licenseTypeName = 'پروانه ' + licenseTypeName
+      }
+      
+      // Calculate VAT from sum of amount + training fee
+      const amount = Number(requestDetails.OriginalAmount || 0)
+      const training = Number(trainingFee || 0)
+      const subtotal = amount + training
+      const vat = Math.round(subtotal * 0.10)
+      
+      // Include tonnage in the title: "برای X تن"
       const fromTon = requestDetails.TonnageFromTon
       const toTon = requestDetails.TonnageToTon
+      const vehicleCapacity = vehicle?.Capacity ? parseNumberLike(vehicle.Capacity) : null
+      const tonnageValue = vehicleCapacity || (fromTon != null && toTon != null ? (fromTon + toTon) / 2 : null)
       let title = `${operationTypeName} ${licenseTypeName}`
       
-      if (fromTon != null && toTon != null) {
-        title = `${operationTypeName} ${licenseTypeName} از ${fromTon} تا ${toTon} تن`
+      if (tonnageValue != null) {
+        title = `${operationTypeName} ${licenseTypeName} برای ${tonnageValue} تن`
       }
       
       console.log('💰 Using pre-calculated amount for exploitation license:', { 
@@ -549,7 +564,88 @@ export default function FinancialPayment() {
       return itemsArray
     }
     
-    // For other license types, calculate tariff from vehicle data
+    // For other license types (Activity, Employment), recalculate from tariffs
+    // This ensures the amount displayed matches what the tariff table defines
+    // Only use stored amounts when a discount was applied
+    console.log('🔍 Building items - requestDetails:', requestDetails)
+    console.log('🔍 requestDetails keys:', Object.keys(requestDetails || {}))
+    
+    // Check both PascalCase and camelCase
+    const rawOriginalAmount = requestDetails?.OriginalAmount ?? requestDetails?.originalAmount
+    const rawFinalAmount = requestDetails?.FinalAmount ?? requestDetails?.finalAmount
+    
+    console.log('🔍 Raw OriginalAmount:', rawOriginalAmount, 'Type:', typeof rawOriginalAmount)
+    console.log('🔍 Raw FinalAmount:', rawFinalAmount, 'Type:', typeof rawFinalAmount)
+    
+    const storedOriginalAmount = rawOriginalAmount ? Number(rawOriginalAmount) : null
+    const storedFinalAmount = rawFinalAmount ? Number(rawFinalAmount) : null
+    const hasDiscount = storedFinalAmount !== null && storedOriginalAmount !== null && storedFinalAmount !== storedOriginalAmount
+    
+    console.log('🔍 Parsed storedOriginalAmount:', storedOriginalAmount, 'storedFinalAmount:', storedFinalAmount, 'hasDiscount:', hasDiscount)
+    
+    // Use FinalAmount if discount exists, otherwise recalculate from tariffs
+    let amount = hasDiscount ? storedFinalAmount : null
+    
+    console.log('🔍 Amount to use (discount or null):', amount)
+    
+    // If we have a discount, use the discounted amount directly
+    if (amount && amount > 0) {
+      let licenseTypeName = requestDetails.LicenseTypeName || 'پروانه'
+      const operationTypeName = requestDetails.OperationTypeName || 'صدور'
+      
+      // Ensure license type name always includes "پروانه" prefix
+      if (!licenseTypeName.includes('پروانه')) {
+        licenseTypeName = 'پروانه ' + licenseTypeName
+      }
+      
+      const vat = Math.round(amount * 0.10)
+      
+      // Include tonnage range in the title if available
+      const fromTon = requestDetails.TonnageFromTon
+      const toTon = requestDetails.TonnageToTon
+      const vehicleCapacity = vehicle?.Capacity ? parseNumberLike(vehicle.Capacity) : null
+      let title = `${operationTypeName} ${licenseTypeName}`
+      
+      if (fromTon != null && toTon != null) {
+        title = `${operationTypeName} ${licenseTypeName} از ${fromTon} تا ${toTon} تن`
+      } else if (vehicleCapacity != null) {
+        title = `${operationTypeName} ${licenseTypeName} برای ${vehicleCapacity} تن`
+      }
+      
+      console.log('💰 Using stored amount from request:', { 
+        amount, 
+        vat,
+        subtotal: amount,
+        licenseTypeName,
+        operationTypeName,
+        fromTon,
+        toTon,
+        title
+      })
+      
+      // Update selectedTariff state
+      const newTariff = {
+        id: 'stored',
+        title,
+        price: amount + vat,
+        originalAmount: amount,
+        vatAmount: vat
+      }
+      
+      setSelectedTariff(prev => {
+        if (!prev || JSON.stringify(prev) !== JSON.stringify(newTariff)) {
+          return newTariff
+        }
+        return prev
+      })
+      
+      return [
+        { title, amount, desc: '' },
+        { title: 'درصد مالیات ارزش افزوده 10', amount: vat, desc: '' }
+      ]
+    }
+    
+    // Fallback: If no stored amount, try to calculate from tariffs
     if (!vehicle) {
       return []
     }
@@ -558,7 +654,7 @@ export default function FinancialPayment() {
       return []
     }
 
-    // Guard against mixing another vehicle of the same owner in pricing calculation
+    // Guard against mixing another vehicle of the same owner in the pricing calculation
     if (requestDetails.VehicleID && vehicle.VehicleID && Number(requestDetails.VehicleID) !== Number(vehicle.VehicleID)) {
       console.error('⚠️ Vehicle mismatch for tariff calculation', {
         requestVehicleId: requestDetails.VehicleID,
@@ -572,27 +668,53 @@ export default function FinancialPayment() {
       return []
     }
     
-    // Get document type ID from request details (for employment license, this is the operation type)
-    const docTypeId = requestDetails.OperationTypeId || requestDetails.LicenseTypeId
-    
     // Determine license type name from request details
     const licenseTypeName = requestDetails.LicenseTypeName || ''
     
-    console.log('💰 Calculating tariff for:', { 
+    // Determine operation type name from request details
+    const operationTypeName = requestDetails.OperationTypeName || ''
+    
+    console.log('💰 No stored amount found, calculating from tariffs for:', { 
       cap, 
-      docTypeId, 
       licenseTypeName,
+      operationTypeName,
       requestLicenseTypeId: requestDetails.LicenseTypeId,
       requestOperationTypeId: requestDetails.OperationTypeId
     })
     
-    // Find matching tariff based on DocTypeId, LicenseType string, and capacity
+    // Determine the correct DocType based on OperationTypeName
+    // The Tariffs API returns DocTypeName which matches the operation type names:
+    // - "صدور" (issuance)
+    // - "تمدید" (renewal) 
+    // - "تمدید اجباری" (forced renewal)
+    //
+    // IMPORTANT: We must match by DocTypeName (string) from the Tariffs table,
+    // because the request's OperationTypeId might not directly match the DocTypeId
+    // in the Tariffs table, or there might be multiple similar renewal types.
+    let targetDocType = ''
+    
+    if (operationTypeName.includes('تمدید اجباری')) {
+      targetDocType = 'تمدید اجباری'  // تمدید اجباری
+    } else if (operationTypeName.includes('تمدید')) {
+      targetDocType = 'تمدید'   // تمدید
+    } else {
+      targetDocType = 'صدور'   // صدور (default for issuance)
+    }
+    
+    console.log('🎯 Resolved target DocType from OperationTypeName:', { 
+      operationTypeName, 
+      targetDocType,
+      isRenewal: operationTypeName.includes('تمدید')
+    })
+    
+    // Find matching tariff based on DocTypeName, LicenseType string, and capacity
     let match = null
     for (const t of tariffs) {
-      // Match DocTypeId (this is the operation type like "صدور")
-      const tariffDocTypeId = t.DocTypeId || t.docTypeId
-      if (tariffDocTypeId !== docTypeId) {
-        console.log(`⏭️ Skipping tariff ${t.Id}: DocTypeId mismatch (${tariffDocTypeId} !== ${docTypeId})`)
+      // Match DocTypeName first (more reliable than DocTypeId)
+      // The API returns DocTypeName from the JOIN with LookupValue table
+      const tariffDocTypeName = t.DocTypeName || ''
+      if (tariffDocTypeName !== targetDocType) {
+        console.log(`⏭️ Skipping tariff ${t.Id}: DocTypeName mismatch (${tariffDocTypeName} !== ${targetDocType})`)
         continue
       }
       
@@ -630,19 +752,27 @@ export default function FinancialPayment() {
     }
     
     if (match) {
-      const amount = Number(match.Amount ?? match.amount ?? 0)
-      // Use request details for license type and operation type names (not from tariff)
-      const licenseTypeName = requestDetails.LicenseTypeName || licenseTypeName || 'پروانه'
+      let licenseTypeName = requestDetails.LicenseTypeName || licenseTypeName || 'پروانه'
       const operationTypeName = requestDetails.OperationTypeName || 'صدور'
-      const title = `${operationTypeName} ${licenseTypeName} از ${(match.FromTon ?? match.fromTon) || ''} تا ${(match.ToTon ?? match.toTon) || ''} تن`
-      const vat = Math.round(amount * 0.10)
+      
+      // Ensure license type name always includes "پروانه" prefix
+      if (!licenseTypeName.includes('پروانه')) {
+        licenseTypeName = 'پروانه ' + licenseTypeName
+      }
+      
+      const tariffAmount = Number(match.Amount ?? match.amount ?? 0)
+      const tonnageValue = cap || (match.FromTon != null && match.ToTon != null ? (match.FromTon + match.ToTon) / 2 : null)
+      const title = tonnageValue != null
+        ? `${operationTypeName} ${licenseTypeName} برای ${tonnageValue} تن`
+        : `${operationTypeName} ${licenseTypeName}`
+      const vat = Math.round(tariffAmount * 0.10)
       
       // Update selectedTariff state if not already set or if it has changed
       const newTariff = {
         id: match.Id || match.id,
         title,
-        price: amount + vat, // Include VAT in the total price
-        originalAmount: amount,
+        price: tariffAmount + vat, // Include VAT in the total price
+        originalAmount: tariffAmount,
         vatAmount: vat
       }
       
@@ -655,7 +785,7 @@ export default function FinancialPayment() {
       })
       
       return [
-        { title, amount, desc: '' },
+        { title: title, amount: tariffAmount, desc: '' },
         { title: 'درصد مالیات ارزش افزوده 10', amount: vat, desc: '' }
       ]
     }

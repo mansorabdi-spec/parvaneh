@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import {
+  DEFAULT_RENEWAL_WINDOW_DAYS,
+  RENEWAL_WINDOW_CATEGORY_KEY,
+  readRenewalWindowDays,
+  toEnglishDigits
+} from '../lib/renewalWindow.js';
 
 export default function AdminLookups() {
   const navigate = useNavigate();
@@ -15,13 +21,24 @@ export default function AdminLookups() {
   const [valSort, setValSort] = useState(0);
   const [editValOpen, setEditValOpen] = useState(false);
   const [editVal, setEditVal] = useState(null); // {Id, Code, Name, SortOrder, IsActive}
+  const [renewalDays, setRenewalDays] = useState(String(DEFAULT_RENEWAL_WINDOW_DAYS));
+  const [renewalValueId, setRenewalValueId] = useState(null);
+  const [renewalSaving, setRenewalSaving] = useState(false);
+  const [renewalMessage, setRenewalMessage] = useState('');
+  const [renewalError, setRenewalError] = useState('');
+
+  const visibleCategories = useMemo(
+    () => categories.filter(c => c.Key !== RENEWAL_WINDOW_CATEGORY_KEY),
+    [categories]
+  );
 
   const selectedCategory = useMemo(() => categories.find(c => c.Key === selectedKey), [categories, selectedKey]);
 
   async function loadCategories() {
     const { data } = await api.get('/api/lookups/categories');
     setCategories(data);
-    if (!selectedKey && data[0]) setSelectedKey(data[0].Key);
+    const firstVisible = (data || []).find(c => c.Key !== RENEWAL_WINDOW_CATEGORY_KEY);
+    if (!selectedKey && firstVisible) setSelectedKey(firstVisible.Key);
   }
   async function loadValues() {
     if (!selectedKey) return;
@@ -34,7 +51,112 @@ export default function AdminLookups() {
     }
   }
 
-  useEffect(() => { loadCategories(); }, []);
+  async function loadRenewalWindow() {
+    setRenewalError('');
+    try {
+      let { data } = await api.get('/api/lookups/values', { params: { categoryKey: RENEWAL_WINDOW_CATEGORY_KEY } });
+      if (!data?.length) {
+        const created = await api.post('/api/lookups/values', {
+          categoryKey: RENEWAL_WINDOW_CATEGORY_KEY,
+          code: String(DEFAULT_RENEWAL_WINDOW_DAYS),
+          name: 'تعداد روز',
+          nameEn: 'Renewal window days',
+          description: 'مقدار پیش‌فرض ۱۰ روز',
+          sortOrder: 1,
+          isActive: true
+        });
+        data = [created.data];
+      }
+      const row = data.find(v => v.IsActive === true || v.IsActive === 1) || data[0];
+      setRenewalValueId(row.Id);
+      setRenewalDays(String(readRenewalWindowDays(data)));
+    } catch (e) {
+      if (e?.response?.status !== 404) {
+        setRenewalError(e?.response?.data?.message || 'خواندن مهلت تمدید ناموفق بود');
+        return;
+      }
+      try {
+        await api.post('/api/lookups/categories', {
+          key: RENEWAL_WINDOW_CATEGORY_KEY,
+          name: 'مهلت تمدید پروانه',
+          description: 'تعداد روز مانده تا انقضای پروانه که دکمه تمدید فعال می‌شود',
+          sortOrder: 200
+        });
+        const created = await api.post('/api/lookups/values', {
+          categoryKey: RENEWAL_WINDOW_CATEGORY_KEY,
+          code: String(DEFAULT_RENEWAL_WINDOW_DAYS),
+          name: 'تعداد روز',
+          nameEn: 'Renewal window days',
+          description: 'مقدار پیش‌فرض ۱۰ روز',
+          sortOrder: 1,
+          isActive: true
+        });
+        setRenewalValueId(created.data.Id);
+        setRenewalDays(String(DEFAULT_RENEWAL_WINDOW_DAYS));
+      } catch (createError) {
+        setRenewalError(createError?.response?.data?.message || 'ایجاد مهلت تمدید ناموفق بود');
+      }
+    }
+  }
+
+  async function saveRenewalWindow() {
+    setRenewalMessage('');
+    setRenewalError('');
+    const parsed = parseInt(toEnglishDigits(renewalDays).trim(), 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3650) {
+      setRenewalError('عدد روز باید یک عدد صحیح بین ۰ و ۳۶۵۰ باشد');
+      return;
+    }
+    setRenewalSaving(true);
+    try {
+      let valueId = renewalValueId;
+      if (!valueId) {
+        let rows = [];
+        try {
+          const response = await api.get('/api/lookups/values', { params: { categoryKey: RENEWAL_WINDOW_CATEGORY_KEY } });
+          rows = response.data || [];
+        } catch (readError) {
+          if (readError?.response?.status !== 404) throw readError;
+          await api.post('/api/lookups/categories', {
+            key: RENEWAL_WINDOW_CATEGORY_KEY,
+            name: 'مهلت تمدید پروانه',
+            description: 'تعداد روز مانده تا انقضای پروانه که دکمه تمدید فعال می‌شود',
+            sortOrder: 200
+          });
+        }
+        if (!rows.length) {
+          const created = await api.post('/api/lookups/values', {
+            categoryKey: RENEWAL_WINDOW_CATEGORY_KEY,
+            code: String(parsed),
+            name: 'تعداد روز',
+            nameEn: 'Renewal window days',
+            sortOrder: 1,
+            isActive: true
+          });
+          valueId = created.data.Id;
+        } else {
+          const row = rows.find(v => v.IsActive === true || v.IsActive === 1) || rows[0];
+          valueId = row.Id;
+        }
+        setRenewalValueId(valueId);
+      }
+      if (valueId) {
+        await api.put(`/api/lookups/values/${valueId}`, {
+          code: String(parsed),
+          name: 'تعداد روز',
+          isActive: true
+        });
+      }
+      setRenewalDays(String(parsed));
+      setRenewalMessage('مهلت تمدید ذخیره شد');
+    } catch (e) {
+      setRenewalError(e?.response?.data?.message || 'ذخیره مهلت تمدید ناموفق بود');
+    } finally {
+      setRenewalSaving(false);
+    }
+  }
+
+  useEffect(() => { loadCategories(); loadRenewalWindow(); }, []);
   useEffect(() => { loadValues(); }, [selectedKey, search]);
 
   // Category CRUD
@@ -91,6 +213,29 @@ export default function AdminLookups() {
   };
 
   return (<>
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginTop: 0 }}>مهلت تمدید پروانه</h3>
+      <p style={{ color: '#555', marginTop: 0 }}>
+        تعداد روز مانده تا تاریخ انقضای پروانه که دکمه تمدید فعال می‌شود. این عدد در پایگاه داده ذخیره می‌شود و در کارتابل و فهرست درخواست‌ها خوانده می‌شود.
+      </p>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label>
+          تعداد روز
+          <input
+            type="number"
+            min="0"
+            max="3650"
+            value={renewalDays}
+            onChange={e => { setRenewalDays(e.target.value); setRenewalMessage(''); setRenewalError(''); }}
+          />
+        </label>
+        <button className="btn btn-green" onClick={saveRenewalWindow} disabled={renewalSaving}>
+          {renewalSaving ? 'در حال ذخیره...' : 'ذخیره'}
+        </button>
+      </div>
+      {renewalError && <div style={{ color: '#c62828', marginTop: 8 }}>{renewalError}</div>}
+      {renewalMessage && <div style={{ color: '#2e7d32', marginTop: 8 }}>{renewalMessage}</div>}
+    </div>
     <div className="card" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
       <div>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -102,7 +247,7 @@ export default function AdminLookups() {
             <tr><th>شناسه</th><th>کلید</th><th>عنوان</th><th></th></tr>
           </thead>
           <tbody>
-            {categories.map(c => (
+            {visibleCategories.map(c => (
               <tr key={c.Id}>
                 <td>{c.Id}</td>
                 <td>{c.Key}</td>

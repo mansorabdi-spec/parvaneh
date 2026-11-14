@@ -13,11 +13,16 @@ import { usePageAccess } from './usePageAccess';
 export default function ProtectedRoute({ 
   element, 
   pageKey, 
+  pageKeys,
   requireAuth = true, 
   redirectTo = "/" 
 }) {
-  const { hasAccess, loading } = usePageAccess();
+  const { hasAccess, loading, error } = usePageAccess();
   const token = localStorage.getItem('token');
+  const requiredKeys = Array.isArray(pageKeys) && pageKeys.length > 0
+    ? pageKeys
+    : (pageKey ? [pageKey] : []);
+  const allowed = requiredKeys.length === 0 || requiredKeys.some((key) => hasAccess(key));
 
   // If authentication is required but no token, redirect to login
   if (requireAuth && !token) {
@@ -29,13 +34,18 @@ export default function ProtectedRoute({
     return <div style={{ padding: '20px', textAlign: 'center' }}>در حال بارگذاری...</div>;
   }
 
-  // If pageKey is provided, check access
-  if (pageKey) {
-    if (!hasAccess(pageKey)) {
-      return <Navigate to={redirectTo} replace />;
-    }
+  // A failed permission lookup is not the same as a denied page.
+  if (!allowed && error) {
+    return (
+      <div style={{ padding: '20px', textAlign: 'center' }}>
+        خطا در بررسی دسترسی. لطفاً چند لحظه بعد دوباره تلاش کنید.
+      </div>
+    );
   }
 
-  // Access granted, render the element
+  if (!allowed) {
+    return <Navigate to={redirectTo} replace />;
+  }
+
   return element;
 }

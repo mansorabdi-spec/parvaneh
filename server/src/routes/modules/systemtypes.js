@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authRequired, requireRole } from '../../middleware/auth.js';
+import { authRequired, requireAnyRole } from '../../middleware/auth.js';
 import { listSystems, createSystem, updateSystem, deleteSystem, listTips, createTip, updateTip, deleteTip } from '../../controllers/systemtypes.controller.js';
 
 const router = Router();
@@ -8,12 +8,12 @@ const router = Router();
 router.get('/', authRequired, listSystems);
 router.get('/:id/tips', authRequired, listTips);
 
-// Write endpoints: Admin-only
-router.post('/', authRequired, requireRole('Admin'), createSystem);
-router.put('/:id', authRequired, requireRole('Admin'), updateSystem);
-router.delete('/:id', authRequired, requireRole('Admin'), deleteSystem);
-router.post('/:id/tips', authRequired, requireRole('Admin'), createTip);
-router.put('/tips/:tipId', authRequired, requireRole('Admin'), updateTip);
-router.delete('/tips/:tipId', authRequired, requireRole('Admin'), deleteTip);
+// Write endpoints: Admin and superadmin
+router.post('/', authRequired, requireAnyRole(['Admin', 'superadmin']), createSystem);
+router.put('/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), updateSystem);
+router.delete('/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), deleteSystem);
+router.post('/:id/tips', authRequired, requireAnyRole(['Admin', 'superadmin']), createTip);
+router.put('/tips/:tipId', authRequired, requireAnyRole(['Admin', 'superadmin']), updateTip);
+router.delete('/tips/:tipId', authRequired, requireAnyRole(['Admin', 'superadmin']), deleteTip);
 
 export default router;

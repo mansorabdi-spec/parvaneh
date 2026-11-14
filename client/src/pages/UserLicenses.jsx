@@ -85,28 +85,162 @@ export default function UserLicenses() {
     );
   };
 
-  const getRequestStatusBadge = (status) => {
-    const statusMap = {
-      'Pending': { text: 'در انتظار بررسی', color: '#f59e0b' },
-      'InProgress': { text: 'در حال بررسی', color: '#3b82f6' },
-      'Approved': { text: 'تایید شده', color: '#10b981' },
-      'Rejected': { text: 'رد شده', color: '#ef4444' },
-      'AwaitingPayment': { text: 'در انتظار پرداخت', color: '#8b5cf6' },
-      'Cancelled': { text: 'لغو شده', color: '#6b7280' }
-    };
-    const statusInfo = statusMap[status] || { text: status, color: '#6b7280' };
-    return (
-      <span style={{
-        padding: '4px 12px',
-        borderRadius: '12px',
-        backgroundColor: statusInfo.color,
-        color: 'white',
-        fontSize: '0.85em',
-        fontWeight: '500'
-      }}>
-        {statusInfo.text}
-      </span>
-    );
+  // Convert Shamsi date string to Date object
+  // Expected format: "YYYY/MM/DD" in Shamsi calendar
+  const shamsiToGregorian = (shamsiDateStr) => {
+    if (!shamsiDateStr) return null;
+    
+    try {
+      const parts = shamsiDateStr.split('/');
+      if (parts.length !== 3) return null;
+      
+      const year = parseInt(parts[0]);
+      const month = parseInt(parts[1]);
+      const day = parseInt(parts[2]);
+      
+      if (isNaN(year) || isNaN(month) || isNaN(day)) return null;
+      
+      // Jalali to Gregorian conversion
+      let gregorianYear = year;
+      let gregorianMonth = month - 1; // JS months are 0-indexed
+      let gregorianDay = day;
+      
+      if (month <= 6) {
+        // Months 1-6: 31 days each
+        gregorianYear += Math.floor((6921 - gregorianYear) / 33) * 4;
+        const leap = ((gregorianYear % 33) % 4 === 0) ? 1 : 0;
+        gregorianYear -= Math.floor((6921 - gregorianYear) / 33) * 4;
+      }
+      
+      // More accurate Jalali to Gregorian conversion
+      const jdn = jalaliToJdn(year, month, day);
+      const greg = jdnToGregorian(jdn);
+      
+      return new Date(gregorianYear, gregorianMonth - greg.month, greg.day);
+    } catch (e) {
+      console.error('Shamsi to Gregorian conversion error:', e);
+      return null;
+    }
+  };
+  
+  // Jalali Day Number calculation
+  const jalaliToJdn = (rYear, rMonth, rDay) => {
+    let gYear = rYear + 621;
+    let jdn;
+    
+    // Calculate if it's a leap year in Jalali calendar
+    const leapYears = [1, 5, 9, 13, 17, 22, 26, 30];
+    const mod = gYear % 33;
+    const isLeap = leapYears.includes(mod);
+    
+    // Days in each month
+    let daysInMonth;
+    if (rMonth <= 6) {
+      daysInMonth = 31;
+    } else if (rMonth <= 11) {
+      daysInMonth = 30;
+    } else {
+      daysInMonth = isLeap ? 30 : 29;
+    }
+    
+    // Total days from year
+    jdn = (gYear - 1) * 365 + Math.floor((gYear - 1) / 4) - Math.floor((gYear - 1) / 100) + Math.floor((gYear - 1) / 400);
+    
+    // Add days for completed months
+    for (let i = 1; i < rMonth; i++) {
+      if (i <= 6) jdn += 31;
+      else jdn += 30;
+    }
+    
+    // Add days
+    jdn += rDay;
+    
+    // Adjust for Jalali epoch (March 22, 622 AD)
+    jdn += 199;
+    
+    return jdn;
+  };
+  
+  const jdnToGregorian = (jdn) => {
+    let n = jdn - 2451545;
+    let j = n + 68569;
+    let k = Math.floor(j / 146097);
+    let m = Math.floor((j - Math.floor((146097 * k + 3) / 4)) / 36524);
+    let i = j - Math.floor((146097 * k + 3) / 4) - Math.floor(36524 * m) + 1461;
+    let year = Math.floor((4000 * (i + 1)) / 1461001);
+    i = i - Math.floor(1461 * year / 4) + 31;
+    let month = Math.floor((80 * i) / 2447);
+    let day = i - Math.floor((2447 * month) / 80);
+    i = Math.floor(month / 11);
+    month = month + 2 - 12 * i;
+    year = 100 * (k - 49) + year + i;
+    
+    return { year, month, day };
+  };
+  
+  // Convert Persian numerals to English numerals
+  const persianToEnglishDigits = (str) => {
+    if (!str) return '';
+    const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    let result = str;
+    persianDigits.forEach((persian, index) => {
+      result = result.replace(new RegExp(persian, 'g'), index.toString());
+    });
+    return result;
+  };
+  
+  const getStatusBadge = (expiryDate, status) => {
+    if (!expiryDate || expiryDate === '-') {
+      return (
+        <span style={{
+          padding: '4px 12px',
+          borderRadius: '12px',
+          backgroundColor: '#6b7280',
+          color: 'white',
+          fontSize: '0.85em',
+          fontWeight: '500'
+        }}>
+          -
+        </span>
+      );
+    }
+    
+    // Get today's date in Shamsi format (with Persian numerals)
+    const today = new Date();
+    const todayShamsi = today.toLocaleDateString('fa-IR'); // Returns "۱۴۰۵/۰۴/۰۵"
+    
+    // Convert both to English digits for comparison
+    const expiryDateEnglish = persianToEnglishDigits(expiryDate); // "1405/04/05"
+    const todayEnglish = persianToEnglishDigits(todayShamsi); // "1405/04/05"
+    
+    // Compare as strings (YYYY/MM/DD format allows direct string comparison)
+    if (expiryDateEnglish > todayEnglish) {
+      return (
+        <span style={{
+          padding: '4px 12px',
+          borderRadius: '12px',
+          backgroundColor: '#10b981',
+          color: 'white',
+          fontSize: '0.85em',
+          fontWeight: '500'
+        }}>
+          فعال
+        </span>
+      );
+    } else {
+      return (
+        <span style={{
+          padding: '4px 12px',
+          borderRadius: '12px',
+          backgroundColor: '#ef4444',
+          color: 'white',
+          fontSize: '0.85em',
+          fontWeight: '500'
+        }}>
+          منقضی شده
+        </span>
+      );
+    }
   };
 
 
@@ -251,8 +385,8 @@ export default function UserLicenses() {
                 <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600' }}>تاریخ ثبت</th>
                 <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600' }}>تاریخ صدور</th>
                 <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600' }}>تاریخ انقضا</th>
-                <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>وضعیت درخواست</th>
-                <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>منبع</th>
+                <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>وضعیت پروانه</th>
+                <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600' }}>منبع </th>
               </tr>
             </thead>
             <tbody>
@@ -289,7 +423,7 @@ export default function UserLicenses() {
                     {license.ExpiryDate || '-'}
                   </td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>
-                    {getRequestStatusBadge(license.Status)}
+                    {getStatusBadge(license.ExpiryDate, license.Status)}
                   </td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>
                     {getFromoldBadge(license.Fromold)}

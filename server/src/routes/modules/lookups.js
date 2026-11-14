@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authRequired, requireRole } from '../../middleware/auth.js';
+import { authRequired, requireAnyRole } from '../../middleware/auth.js';
 import { listCategories, createCategory, updateCategory, deleteCategory, listValues, getValue, createValue, updateValue, deleteValue } from '../../controllers/lookups.controller.js';
 
 const router = Router();
@@ -9,12 +9,12 @@ router.get('/categories', authRequired, listCategories);
 router.get('/values', authRequired, listValues);
 router.get('/values/:id', authRequired, getValue);
 
-// Write endpoints: Admin-only
-router.post('/categories', authRequired, requireRole('Admin'), createCategory);
-router.put('/categories/:id', authRequired, requireRole('Admin'), updateCategory);
-router.delete('/categories/:id', authRequired, requireRole('Admin'), deleteCategory);
-router.post('/values', authRequired, requireRole('Admin'), createValue);
-router.put('/values/:id', authRequired, requireRole('Admin'), updateValue);
-router.delete('/values/:id', authRequired, requireRole('Admin'), deleteValue);
+// Write endpoints: Admin and superadmin
+router.post('/categories', authRequired, requireAnyRole(['Admin', 'superadmin']), createCategory);
+router.put('/categories/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), updateCategory);
+router.delete('/categories/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), deleteCategory);
+router.post('/values', authRequired, requireAnyRole(['Admin', 'superadmin']), createValue);
+router.put('/values/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), updateValue);
+router.delete('/values/:id', authRequired, requireAnyRole(['Admin', 'superadmin']), deleteValue);
 
 export default router;

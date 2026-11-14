@@ -1,10 +1,11 @@
 import React, { useEffect, useState, lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
 import { initAuthFromStorage, setAuthToken } from './lib/api.js'
 import { loadUserPermissions, clearPermissions } from './lib/permissions.js'
 import ProtectedRoute from './lib/ProtectedRoute.jsx'
 import ProtectedLink from './lib/ProtectedLink.jsx'
 import DynamicNav from './lib/DynamicNav.jsx'
+import SitePopup from './components/SitePopup.jsx'
 import './styles.css'
 
 const Home = lazy(() => import('./pages/Home.jsx'))
@@ -26,6 +27,7 @@ const AdminTariffs = lazy(() => import('./pages/AdminTariffs.jsx'))
 const RedirectToBank = lazy(() => import('./pages/RedirectToBank.jsx'))
 const PaymentCallback = lazy(() => import('./pages/PaymentCallback.jsx'))
 const AdminActivityLicenseReports = lazy(() => import('./pages/AdminActivityLicenseReports.jsx'))
+const AdminComprehensiveReport = lazy(() => import('./pages/AdminComprehensiveReport.jsx'))
 const AdminActivityLicenseDetail = lazy(() => import('./pages/AdminActivityLicenseDetail.jsx'))
 const UserInbox = lazy(() => import('./pages/UserInbox.jsx'))
 const WorkflowRequestDetail = lazy(() => import('./pages/WorkflowRequestDetail.jsx'))
@@ -45,6 +47,16 @@ const AdminPrintStatistics = lazy(() => import('./pages/AdminPrintStatistics.jsx
 const AdminLicenseHistory = lazy(() => import('./pages/AdminLicenseHistory.jsx'))
 const UserLicenses = lazy(() => import('./pages/UserLicenses.jsx'))
 const ManageCompanies = lazy(() => import('./pages/ManageCompanies.jsx'))
+const AdminSiteSettings = lazy(() => import('./pages/AdminSiteSettings.jsx'))
+const RenewActivityLicense = lazy(() => import('./pages/RenewActivityLicense.jsx'))
+const RenewEmploymentLicense = lazy(() => import('./pages/RenewEmploymentLicense.jsx'))
+const RenewExploitationLicense = lazy(() => import('./pages/RenewExploitationLicense.jsx'))
+const ChangeActivityLicense = lazy(() => import('./pages/ChangeActivityLicense.jsx'))
+const ChangeEmploymentLicense = lazy(() => import('./pages/ChangeEmploymentLicense.jsx'))
+const ChangeExploitationLicense = lazy(() => import('./pages/ChangeExploitationLicense.jsx'))
+const ChangeActivityLegalLicense = lazy(() => import('./pages/ChangeActivityLegalLicense.jsx'))
+const TariffTest = lazy(() => import('./pages/TariffTest.jsx'))
+const Kiosk = lazy(() => import('./pages/Kiosk.jsx'))
 
 function PageLoader() {
   return (
@@ -202,6 +214,36 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <AppShell
+        token={token}
+        user={user}
+        companyName={companyName}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        onLoggedIn={onLoggedIn}
+        onLogout={onLogout}
+        onRoleSwitch={onRoleSwitch}
+      />
+    </BrowserRouter>
+  )
+}
+
+function AppShell({ token, user, companyName, theme, toggleTheme, onLoggedIn, onLogout, onRoleSwitch }) {
+  const location = useLocation()
+  const isKiosk = /^\/kiosk\/?$/i.test(location.pathname)
+
+  if (isKiosk) {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/Kiosk" element={<Kiosk />} />
+          <Route path="/kiosk" element={<Kiosk />} />
+        </Routes>
+      </Suspense>
+    )
+  }
+
+  return (
       <div className={`app-wrapper ${theme}`}>
         <header className="main-header">
           {/* Logo and Title on the right */}
@@ -270,16 +312,20 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/licenses/activity/issue" element={<ProtectedRoute pageKey="issue_license" element={<IssueLicense user={user} />} />} />
-            <Route path="/licenses/activity/renew" element={<ProtectedRoute pageKey="renew_license" element={<div style={{padding: '20px'}}>صفحه تمدید پروانه فعالیت (در دست توسعه)</div>} />} />
+            <Route path="/licenses/activity/renew/:requestId" element={<ProtectedRoute pageKeys={['renew_license', 'workflow_inbox']} element={<RenewActivityLicense user={user} />} />} />
+            <Route path="/licenses/activity/change/:requestId" element={<ProtectedRoute pageKeys={['change_license', 'workflow_inbox']} element={<ChangeActivityLicense user={user} />} />} />
+            <Route path="/licenses/activity/legal/change/:requestId" element={<ProtectedRoute pageKeys={['change_license', 'workflow_inbox']} element={<ChangeActivityLegalLicense user={user} />} />} />
             <Route path="/licenses/activity/cancel" element={<ProtectedRoute pageKey="cancel_license" element={<LicenseCancellation />} />} />
             
             {/* Employment License Routes */}
             <Route path="/licenses/employment/issue" element={<ProtectedRoute pageKey="employment_issue" element={<IssueEmploymentLicense user={user} />} />} />
-            <Route path="/licenses/employment/renew" element={<ProtectedRoute pageKey="employment_renew" element={<div style={{padding: '20px'}}>صفحه تمدید پروانه اشتغال (در دست توسعه)</div>} />} />
+            <Route path="/licenses/employment/renew/:requestId" element={<ProtectedRoute pageKeys={['employment_renew', 'workflow_inbox']} element={<RenewEmploymentLicense user={user} />} />} />
+            <Route path="/licenses/employment/change/:requestId" element={<ProtectedRoute pageKeys={['employment_change', 'workflow_inbox']} element={<ChangeEmploymentLicense user={user} />} />} />
             <Route path="/licenses/employment/revoke" element={<ProtectedRoute pageKey="employment_revoke" element={<div style={{padding: '20px'}}>صفحه ابطال پروانه اشتغال (در دست توسعه)</div>} />} />
             
             <Route path="/licenses/exploitation/issue" element={<ProtectedRoute pageKey="exploitation_issue" element={<IssueExploitationLicense user={user} />} />} />
-            <Route path="/licenses/exploitation/renew" element={<ProtectedRoute pageKey="exploitation_renew" element={<div style={{padding: '20px'}}>صفحه تمدید پروانه بهره‌برداری (در دست توسعه)</div>} />} />
+            <Route path="/licenses/exploitation/renew/:requestId" element={<ProtectedRoute pageKeys={['exploitation_renew', 'workflow_inbox']} element={<RenewExploitationLicense user={user || {}} />} />} />
+            <Route path="/licenses/exploitation/change/:requestId" element={<ProtectedRoute pageKeys={['exploitation_change', 'workflow_inbox']} element={<ChangeExploitationLicense user={user} />} />} />
             <Route path="/licenses/exploitation/cancel" element={<ProtectedRoute pageKey="exploitation_cancel" element={<div style={{padding: '20px'}}>صفحه ابطال پروانه بهره‌برداری (در دست توسعه)</div>} />} />
             <Route path="/login" element={<Login onLoggedIn={onLoggedIn} />} />
             <Route path="/register" element={<Register onLoggedIn={onLoggedIn} />} />
@@ -301,6 +347,7 @@ export default function App() {
             <Route path="/payment-callback" element={<PaymentCallback />} />
             <Route path="/admin/tariffs" element={<ProtectedRoute pageKey="admin_tariffs" element={<AdminTariffs />} />} />
             <Route path="/admin/reports/activity-licenses" element={<ProtectedRoute pageKey="admin_reports_activity_licenses" element={<AdminActivityLicenseReports />} />} />
+            <Route path="/admin/reports/comprehensive" element={<ProtectedRoute pageKey="admin_reports_comprehensive" element={<AdminComprehensiveReport />} />} />
             <Route path="/admin/reports/activity-licenses/:vehicleId" element={<ProtectedRoute pageKey="admin_reports_activity_licenses" element={<AdminActivityLicenseDetail />} />} />
             <Route path="/workflow/inbox" element={<ProtectedRoute pageKey="workflow_inbox" element={<UserInbox />} />} />
             <Route path="/workflow/request/:requestId" element={<ProtectedRoute pageKey="workflow_inbox" element={<WorkflowRequestDetail />} />} />
@@ -314,13 +361,18 @@ export default function App() {
             <Route path="/print-license/:requestId" element={<ProtectedRoute pageKey="print_license" element={<PrintLicense />} />} />
             <Route path="/print-legal-entity-license/:requestId" element={<ProtectedRoute pageKey="print_license" element={<PrintLegalEntityLicense />} />} />
             <Route path="/verify-license/:trackingNo" element={<VerifyLicense />} />
+            <Route path="/admin/site-settings" element={<ProtectedRoute element={<AdminSiteSettings />} />} />
+            {/* Tariff Test Page (Development) */}
+            <Route path="/tariff-test" element={<TariffTest />} />
+            <Route path="/Kiosk" element={<Kiosk />} />
+            <Route path="/kiosk" element={<Kiosk />} />
             <Route path="*" element={<div>صفحه مورد نظر یافت نشد</div>} />
           </Routes>
           </Suspense>
         </main>
           </div>
         </div>
+        <SitePopup />
       </div>
-    </BrowserRouter>
   )
 }

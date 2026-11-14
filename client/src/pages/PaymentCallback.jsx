@@ -86,13 +86,20 @@ export default function PaymentCallback() {
         console.log('Payment verification result:', verification);
         
         if (verification.success) {
+          let renewalNotice = null
+          try {
+            renewalNotice = JSON.parse(sessionStorage.getItem('exploitationRenewalNotice') || 'null')
+            if (renewalNotice) sessionStorage.removeItem('exploitationRenewalNotice')
+          } catch {}
+          const licenseTrackingNo = renewalNotice?.trackingNo || orderId
           setStatus('success');
-          setMessage('پرداخت با موفقیت انجام شد و پرونده جهت تایید ارجاع گردید');
+          setMessage(renewalNotice?.message || 'پرداخت با موفقیت انجام شد و پرونده جهت تایید ارجاع گردید');
           setPaymentDetails({
             // Use backend amount if present; otherwise fallback to decoded FinalAmount
             amount: (typeof verification.amount === 'number' ? verification.amount : finalAmountCandidate) || null,
             refId: verification.refId,
-            trackingNumber: orderId,
+            trackingNumber: licenseTrackingNo,
+            renewalNotice: renewalNotice?.message || '',
             date: new Date().toLocaleString('fa-IR')
           });
           // Note: server-side verification endpoint should update DB status.
@@ -135,7 +142,10 @@ export default function PaymentCallback() {
         <div style={styles.successBox} className="printable">
           <div style={styles.successIcon}>✓</div>
           <h2 style={styles.successTitle}>پرداخت موفق</h2>
-          <p style={styles.successMessage}>پرداخت شما با موفقیت انجام شد</p>
+          <p style={styles.successMessage}>{paymentDetails.renewalNotice || 'پرداخت شما با موفقیت انجام شد'}</p>
+          {paymentDetails.renewalNotice && (
+            <p style={styles.successMessage}>درخواست در مرحله اول گردش تأیید تمدید پروانه بهره‌برداری قرار گرفت.</p>
+          )}
           
           <div style={styles.detailsBox}>
             <div style={styles.detailRow}>

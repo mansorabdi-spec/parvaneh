@@ -1,6 +1,39 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
+import { getDaysUntilShamsiExpiry } from '../lib/shamsiDays.js'
+import { DEFAULT_RENEWAL_WINDOW_DAYS, loadRenewalWindowDays } from '../lib/renewalWindow.js'
+
+function classifyLicenseTask(task) {
+  const name = task?.LicenseTypeName || ''
+  const tracking = task?.TrackingNo == null ? '' : String(task.TrackingNo)
+  const typeId = Number(task?.LicenseTypeId)
+  const byExploitationId = typeId === 68 || tracking.startsWith('11')
+  const byEmploymentId = typeId === 67 || tracking.startsWith('2')
+  const isExploitation = byExploitationId || (!byEmploymentId && name.includes('بهره'))
+  const isEmployment = !isExploitation && (byEmploymentId || name.includes('اشتغال'))
+  const isLegalEntity = !isExploitation && !isEmployment && (
+    typeId === 137 ||
+    name.includes('فعالیت حقوقی') ||
+    (name.includes('حقوقی') && name.includes('فعالیت'))
+  )
+  return { isExploitation, isEmployment, isLegalEntity }
+}
+
+function renewPath(task) {
+  const { isExploitation, isEmployment } = classifyLicenseTask(task)
+  if (isExploitation) return `/licenses/exploitation/renew/${task.RequestID}`
+  if (isEmployment) return `/licenses/employment/renew/${task.RequestID}`
+  return `/licenses/activity/renew/${task.RequestID}`
+}
+
+function changePath(task) {
+  const { isExploitation, isEmployment, isLegalEntity } = classifyLicenseTask(task)
+  if (isExploitation) return `/licenses/exploitation/change/${task.RequestID}`
+  if (isEmployment) return `/licenses/employment/change/${task.RequestID}`
+  if (isLegalEntity) return `/licenses/activity/legal/change/${task.RequestID}`
+  return `/licenses/activity/change/${task.RequestID}`
+}
 
 export default function UserInbox() {
   const navigate = useNavigate()
@@ -11,6 +44,7 @@ export default function UserInbox() {
   const [licenseTypes, setLicenseTypes] = useState([])
   const [filters, setFilters] = useState({
     trackingNo: '',
+    requestId: '',
     licenseType: '',
     applicantName: '',
     nationalCode: '',
@@ -18,12 +52,14 @@ export default function UserInbox() {
     vin: '',
     status: ''
   })
+  const [renewalWindowDays, setRenewalWindowDays] = useState(DEFAULT_RENEWAL_WINDOW_DAYS)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 30
 
   useEffect(() => {
     loadInbox()
     loadLicenseTypes()
+    loadRenewalWindowDays().then(setRenewalWindowDays)
   }, [])
 
   // Reset to page 1 when filters change
@@ -81,6 +117,140 @@ export default function UserInbox() {
     if (!num && num !== 0) return ''
     const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
     return String(num).replace(/\d/g, x => farsiDigits[parseInt(x)])
+  }
+
+  // Convert Shamsi date string to Date object for comparison
+  // Shamsi format: YYYY/MM/DD (e.g., 1405/04/20)
+  const shamsiToGregorian = (shamsiDate) => {
+    if (!shamsiDate) return null
+    try {
+      const parts = shamsiDate.split('/')
+      if (parts.length !== 3) return null
+      
+      const year = parseInt(parts[0])
+      const month = parseInt(parts[1])
+      const day = parseInt(parts[2])
+      
+      // Convert Shamsi to Gregorian using a simplified algorithm
+      // This is an approximation - for production, use a proper Shamsi-to-Gregorian library
+      const shamsiStart = new Date(622, 0, 1) // March 21, 622 (Nowruz)
+      const daysOffset = (year - 1) * 365 + Math.floor((year - 1) / 33) * 8 + Math.floor(((year - 1) % 33 + 3) / 4)
+      
+      const monthDays = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+      let totalDays = daysOffset + ((month - 1) * 31) + day
+      
+      const gregorianDate = new Date(shamsiStart.getTime() + totalDays * 24 * 60 * 60 * 1000)
+      return gregorianDate
+    } catch (e) {
+      console.error('Error converting Shamsi date:', e)
+      return null
+    }
+  }
+
+  // Convert Persian/Arabic digits to English digits
+  const persianToEnglishDigits = (str) => {
+    if (!str) return str
+    const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
+    const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩']
+    const englishDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+    
+    let result = String(str)
+    // Convert Persian digits
+    persianDigits.forEach((persian, i) => {
+      result = result.replace(new RegExp(persian, 'g'), englishDigits[i])
+    })
+    // Convert Arabic digits
+    arabicDigits.forEach((arabic, i) => {
+      result = result.replace(new RegExp(arabic, 'g'), englishDigits[i])
+    })
+    return result
+  }
+
+  // Check if a license has expired based on ExpiryDate
+  // Returns true if the license HAS expired (expiry date is before or equal to today)
+  // Returns false if the license is still valid (expiry date is after today)
+  const isLicenseExpired = (expiryDate, task) => {
+    if (!expiryDate) {
+      console.log(`[isLicenseExpired] No expiry date for RequestID ${task?.RequestID}, returning false`)
+      return false
+    }
+    
+    try {
+      // Get today's date in Shamsi format using toLocaleDateString with fa-IR calendar
+      const today = new Date()
+      
+      // Use Intl.DateTimeFormat with Baha'i calendar (fa-IR uses Shamsi)
+      const todayShamsi = today.toLocaleDateString('fa-IR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      })
+      
+      console.log(`[isLicenseExpired] Checking RequestID ${task?.RequestID}:`, {
+        expiryDate: expiryDate,
+        todayShamsiRaw: todayShamsi,
+        todayJsDate: today.toISOString()
+      })
+      
+      // Ensure both are strings and convert to English digits
+      const expiryStr = String(expiryDate).trim()
+      const todayStrRaw = String(todayShamsi).trim()
+      const todayStr = persianToEnglishDigits(todayStrRaw)
+      
+      console.log(`[isLicenseExpired] After digit conversion:`, {
+        expiryStr,
+        todayStr
+      })
+      
+      // Extract year, month, day as numbers
+      const expiryParts = expiryStr.split('/')
+      const todayParts = todayStr.split('/')
+      
+      if (expiryParts.length !== 3 || todayParts.length !== 3) {
+        console.warn(`[isLicenseExpired] Invalid date format: expiry="${expiryStr}", today="${todayStr}"`)
+        return false
+      }
+      
+      const expiryYear = parseInt(expiryParts[0])
+      const expiryMonth = parseInt(expiryParts[1])
+      const expiryDay = parseInt(expiryParts[2])
+      
+      const todayYear = parseInt(todayParts[0])
+      const todayMonth = parseInt(todayParts[1])
+      const todayDay = parseInt(todayParts[2])
+      
+      if (isNaN(expiryYear) || isNaN(expiryMonth) || isNaN(expiryDay) ||
+          isNaN(todayYear) || isNaN(todayMonth) || isNaN(todayDay)) {
+        console.warn(`[isLicenseExpired] Failed to parse date parts: expiry="${expiryStr}", today="${todayStr}"`)
+        return false
+      }
+      
+      // Compare dates numerically: (year, month, day)
+      // A license is expired if its expiry date is before or equal to today
+      const isExpired = (expiryYear < todayYear) || 
+                        (expiryYear === todayYear && expiryMonth < todayMonth) || 
+                        (expiryYear === todayYear && expiryMonth === todayMonth && expiryDay <= todayDay)
+      
+      console.log(`[isLicenseExpired] Result for RequestID ${task?.RequestID}:`, {
+        expiryYear, expiryMonth, expiryDay,
+        todayYear, todayMonth, todayDay,
+        isExpired,
+        explanation: isExpired ? 'Expired (expiry date is before or equal to today)' : 'Still valid (expiry date is after today)'
+      })
+      
+      return isExpired
+    } catch (e) {
+      console.error('[isLicenseExpired] Error checking expiry:', e, 'for expiryDate:', expiryDate)
+      return false
+    }
+  }
+
+  const handleRenewLicense = (task) => {
+    navigate(renewPath(task), { state: { task } })
+  }
+
+  const handleChangeLicense = (task) => {
+    navigate(changePath(task), { state: { task } })
   }
 
   const formatPlate = (task) => {
@@ -183,6 +353,7 @@ export default function UserInbox() {
     
     // Column-specific filters
     if (filters.trackingNo && !task.TrackingNo?.toLowerCase().includes(filters.trackingNo.toLowerCase())) return false
+    if (filters.requestId && !String(task.RequestID).includes(filters.requestId)) return false
     if (filters.licenseType && !task.LicenseTypeName?.toLowerCase().includes(filters.licenseType.toLowerCase())) return false
     if (filters.applicantName) {
       const fullName = `${task.FirstName || ''} ${task.LastName || ''}`.toLowerCase()
@@ -361,6 +532,7 @@ export default function UserInbox() {
             <thead>
               <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #d1d5db' }}>
                 <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold', width: '60px' }}>ردیف</th>
+                <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold', width: '100px' }}>شماره درخواست</th>
                 <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>نوع</th>
                 <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>شماره پیگیری</th>
                 <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>نوع پروانه</th>
@@ -375,6 +547,15 @@ export default function UserInbox() {
               </tr>
               <tr style={{ background: '#f9fafb' }}>
                 <td style={{ padding: '8px' }}></td>
+                <td style={{ padding: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="فیلتر..."
+                    value={filters.requestId}
+                    onChange={(e) => setFilters(f => ({ ...f, requestId: e.target.value }))}
+                    style={{ width: '100%', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px' }}
+                  />
+                </td>
                 <td style={{ padding: '8px' }}></td>
                 <td style={{ padding: '8px' }}>
                   <input
@@ -460,9 +641,11 @@ export default function UserInbox() {
                 // Check if request has deficiency
                 const hasDeficiency = task.HasDeficiency === true || task.HasDeficiency === 1
                 // Determine license type from LicenseTypeId or TrackingNo
-                const isExploitationLicense = task.LicenseTypeId === 68 || task.TrackingNo?.startsWith('11')
-                const isEmploymentLicense = task.LicenseTypeId === 67 || task.TrackingNo?.startsWith('2')
-                const isLegalEntityLicense = task.LicenseTypeName && task.LicenseTypeName.includes('فعالیت حقوقی')
+                const {
+                  isExploitation: isExploitationLicense,
+                  isEmployment: isEmploymentLicense,
+                  isLegalEntity: isLegalEntityLicense
+                } = classifyLicenseTask(task)
                 
                 // Can edit if: it's my request AND (no expert has reviewed yet OR has deficiency)
                 // No expert has reviewed means: StepOrder is 0 (initial submission) or StepOrder is 1 and status is still Pending/NotStarted
@@ -553,6 +736,9 @@ export default function UserInbox() {
                     <td style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold', color: '#6b7280' }}>
                       {globalIndex}
                     </td>
+                    <td style={{ padding: '12px', textAlign: 'center', fontSize: '12px', fontFamily: 'monospace', direction: 'ltr' }}>
+                      {task.RequestID}
+                    </td>
                     <td style={{ padding: '12px', textAlign: 'center' }}>
                       <span style={{ 
                         padding: '4px 10px', 
@@ -578,7 +764,13 @@ export default function UserInbox() {
                           background: '#dbeafe',
                           color: '#1e40af'
                         }}>
-                          {task.LicenseTypeName || (isEmploymentLicense ? 'پروانه اشتغال' : 'پروانه فعالیت')}
+                          {(() => {
+                            // For LicenseTypeId 137, display "فعالیت حقوقی" instead of "فعالیت"
+                            if (task.LicenseTypeId === 137) {
+                              return 'فعالیت حقوقی'
+                            }
+                            return task.LicenseTypeName || (isEmploymentLicense ? 'پروانه اشتغال' : 'پروانه فعالیت')
+                          })()}
                         </div>
                         {task.OperationTypeName && (
                           <div style={{ 
@@ -727,31 +919,167 @@ export default function UserInbox() {
                           </button>
                         )}
                         {isMyRequest && canPrint && (
-                          <button
-                            onClick={() => {
-if (isExploitationLicense) {
-                                navigate(`/print-exploitation-license/${task.RequestID}`)
-                              } else if (isEmploymentLicense) {
-                                navigate(`/print-employment-license/${task.RequestID}`)
-                              } else if (isLegalEntityLicense) {
-                                navigate(`/print-legal-entity-license/${task.RequestID}`)
-                              } else {
-                                navigate(`/print-license/${task.RequestID}`)
+                          (() => {
+                            // Check expiry using the new API endpoint that checks LicenseHistory with both RequestID and TrackingNo
+                            const checkExpiryFromApi = async () => {
+                              try {
+                                const response = await api.get(`/api/workflow/license-expiry-check/${task.RequestID}`)
+                                const { isExpired, expiryDate, trackingNo, requestID } = response.data
+                                console.log(`🔍 License expiry check for RequestID ${requestID}:`, {
+                                  isExpired,
+                                  expiryDate,
+                                  trackingNo,
+                                  requestID
+                                })
+                                return isExpired
+                              } catch (error) {
+                                console.error(`❌ Error checking expiry for RequestID ${task.RequestID}:`, error)
+                                // If API call fails, fallback to ExpiryDate from task
+                                if (task.ExpiryDate) {
+                                  return isLicenseExpired(task.ExpiryDate, task)
+                                }
+                                return false
                               }
-                            }}
-                            style={{
-                              padding: '6px 16px',
-                              background: '#8b5cf6',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: 'pointer',
-                              fontSize: '13px',
-                              fontWeight: 'bold'
-                            }}
-                          >
-                            🖨️ چاپ پروانه
-                          </button>
+                            }
+                            
+                            // Default: assume not expired
+                            let isExpired = false
+                            
+                            // If we have ExpiryDate from the task, check it as fallback
+                            if (task.ExpiryDate) {
+                              isExpired = isLicenseExpired(task.ExpiryDate, task)
+                            }
+                            
+                            return (
+                              <button
+                                onClick={async () => {
+                                  // Check expiry from API before allowing print
+                                  const expired = await checkExpiryFromApi()
+                                  if (expired) {
+                                    alert('پروانه منقضی شده است - چاپ غیرفعال')
+                                    return
+                                  }
+                                  
+                                  if (isExploitationLicense) {
+                                    navigate(`/print-exploitation-license/${task.RequestID}`)
+                                  } else if (isEmploymentLicense) {
+                                    navigate(`/print-employment-license/${task.RequestID}`)
+                                  } else if (isLegalEntityLicense) {
+                                    navigate(`/print-legal-entity-license/${task.RequestID}`)
+                                  } else {
+                                    navigate(`/print-license/${task.RequestID}`)
+                                  }
+                                }}
+                                style={{
+                                  padding: '6px 16px',
+                                  background: isExpired ? '#d1d5db' : '#8b5cf6',
+                                  color: isExpired ? '#9ca3af' : 'white',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  cursor: isExpired ? 'not-allowed' : 'pointer',
+                                  fontSize: '13px',
+                                  fontWeight: 'bold'
+                                }}
+                                disabled={isExpired}
+                                title={isExpired ? 'پروانه منقضی شده است - چاپ غیرفعال' : 'چاپ پروانه'}
+                              >
+                                🖨️ چاپ پروانه
+                              </button>
+                            )
+                          })()
+                        )}
+                        {isMyRequest && canPrint && task.ExpiryDate && (
+                          <>
+                            {(() => {
+                              const daysUntilExpiry = getDaysUntilShamsiExpiry(task.ExpiryDate)
+                              const isExpired = daysUntilExpiry === null
+                                ? isLicenseExpired(task.ExpiryDate, task)
+                                : daysUntilExpiry <= 0
+                              const canRenewNow = daysUntilExpiry === null
+                                ? isExpired
+                                : daysUntilExpiry <= renewalWindowDays
+                              const renewTitle = !canRenewNow
+                                ? `تمدید پروانه - بیش از ${toFarsiNumber(renewalWindowDays)} روز تا انقضا مانده است`
+                                : isExpired
+                                  ? 'تمدید پروانه - منقضی شده'
+                                  : `تمدید پروانه - ${toFarsiNumber(daysUntilExpiry)} روز تا انقضا مانده است`
+
+                              return (
+                                <>
+                                  <button
+                                    onClick={() => handleRenewLicense(task)}
+                                    disabled={!canRenewNow}
+                                    style={{
+                                      padding: '6px 16px',
+                                      background: canRenewNow ? '#059669' : '#d1d5db',
+                                      color: canRenewNow ? 'white' : '#6b7280',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      cursor: canRenewNow ? 'pointer' : 'not-allowed',
+                                      fontSize: '13px',
+                                      fontWeight: 'bold'
+                                    }}
+                                    title={renewTitle}
+                                  >
+                                    🔄 تمدید
+                                  </button>
+                                  <button
+                                    onClick={() => handleChangeLicense(task)}
+                                    style={{
+                                      padding: '6px 16px',
+                                      background: '#f59e0b',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      fontSize: '13px',
+                                      fontWeight: 'bold'
+                                    }}
+                                    title="درخواست تغییر پروانه فعالیت"
+                                  >
+                                    📝 تغییر
+                                  </button>
+                                </>
+                              )
+                            })()}
+                          </>
+                        )}
+                        {/* Renewal and Change buttons for Employment License - always available for my requests */}
+                        {isMyRequest && isEmploymentLicense && !canPrint && (
+                          <>
+                            <button
+                              onClick={() => handleRenewLicense(task)}
+                              style={{
+                                padding: '6px 16px',
+                                background: '#059669',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title="تمدید پروانه اشتغال"
+                            >
+                              🔄 تمدید
+                            </button>
+                            <button
+                              onClick={() => handleChangeLicense(task)}
+                              style={{
+                                padding: '6px 16px',
+                                background: '#f59e0b',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title="درخواست تغییر پروانه اشتغال"
+                            >
+                              📝 تغییر
+                            </button>
+                          </>
                         )}
                         <button
                           onClick={() => navigate(`/workflow/request/${task.RequestID}`)}

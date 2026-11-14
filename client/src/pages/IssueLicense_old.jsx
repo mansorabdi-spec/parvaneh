@@ -76,7 +76,7 @@ export default function IssueLicense({ user }) {
     nationality: 'ایران', // ایران | سایر
     nationalCode: user?.nationalCode || '',
     vin: '',
-    consent: false
+    consent: true
   })
   
   // Ownership type (نوع مالکیت): حقیقی (individual) or حقوقی (legal entity)
