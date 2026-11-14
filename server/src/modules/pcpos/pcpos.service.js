@@ -9,8 +9,8 @@ import {
   formatDateTime,
   interpretPosResponse,
   isLivePosState,
-  parseFrame,
   parsePairToken,
+  parsePosPayload,
 } from './pcpos.protocol.js';
 import { allocateMessageId, saveToken } from './pcpos.session.js';
 import {
@@ -225,7 +225,7 @@ async function settle(id, transport, expect, { deviceAccepted = false } = {}) {
   const rejected = httpDecision(transport);
   if (rejected) return applyDecision(id, { ...rejected, responseFrame: transport.body });
 
-  const parsed = parseFrame(transport.body);
+  const parsed = parsePosPayload(transport.body);
   if (parsed.checksumValid && parsed.type === 'POSBSY') {
     return applyDecision(id, {
       outcome: 'failed',
@@ -259,7 +259,7 @@ function readStatus(transport) {
   if (transport.httpStatus === 401) return { kind: 'unauthorized' };
   if (transport.httpStatus === 409) return { kind: 'busy' };
   if (transport.httpStatus !== 200) return { kind: 'http', status: transport.httpStatus, body: transport.body };
-  const parsed = parseFrame(transport.body);
+  const parsed = parsePosPayload(transport.body);
   if (!parsed.checksumValid) return { kind: 'bad-frame', body: transport.body };
   if (parsed.type === 'POSBSY') return { kind: 'busy', body: transport.body };
   if (parsed.type === 'POSSTA') {
@@ -282,9 +282,9 @@ function publicResult(result, extra) {
   };
 }
 
-export async function purchase(input) {
+export async function startPurchase(input) {
   const config = assertPcPosConfigured();
-  if (!config.token) return pairingRequired();
+  if (!config.token) return { result: pairingRequired() };
 
   const messageId = input.messageId || allocateMessageId();
   const dateTime = formatDateTime();
@@ -304,8 +304,14 @@ export async function purchase(input) {
     applicationId,
   });
 
-  return withDevice(async () => {
-    const transactionId = await insertTransaction({
+  if (deviceBusy) {
+    throw new PcPosError('دستگاه POS در حال انجام تراکنش دیگری است. تا مشخص شدن نتیجهٔ همان تراکنش صبر کنید', 409);
+  }
+  deviceBusy = true;
+  activeRequestId = input.requestId == null ? null : String(input.requestId);
+  let transactionId;
+  try {
+    transactionId = await insertTransaction({
       kind: 'purchase',
       messageId,
       invoiceNumber: String(input.invoiceNumber),
@@ -319,21 +325,62 @@ export async function purchase(input) {
       deviceAccepted: true,
       errorMessage: 'منتظر پایان کار روی کارتخوان',
     });
-    const transport = await postFrame(requestFrame, config);
-    const result = await settle(transactionId, transport, {
-      expectedType: 'POSBUY',
-      expectedMessageId: messageId,
-    }, { deviceAccepted: !transport.unreachable });
-    logResult('purchase', messageId, result);
-    return publicResult(result, {
+  } catch (error) {
+    deviceBusy = false;
+    activeRequestId = null;
+    throw error;
+  }
+
+  const completion = (async () => {
+    try {
+      const transport = await postFrame(requestFrame, config);
+      const result = await settle(transactionId, transport, {
+        expectedType: 'POSBUY',
+        expectedMessageId: messageId,
+      }, { deviceAccepted: !transport.unreachable });
+      logResult('purchase', messageId, result);
+      return publicResult(result, {
+        transactionId,
+        messageId,
+        invoiceNumber: String(input.invoiceNumber),
+        dateTime,
+        requestFrame,
+        target: endpoint(config),
+      });
+    } catch (error) {
+      const message = error.message || 'پرداخت روی کارتخوان ناتمام ماند';
+      await updateTransaction(transactionId, { outcome: 'failed', errorMessage: message }).catch(() => {});
+      return {
+        outcome: 'failed',
+        message,
+        transactionId,
+        shouldInquiry: false,
+        shouldRetry: true,
+        responseCode: '',
+      };
+    } finally {
+      deviceBusy = false;
+      activeRequestId = null;
+    }
+  })();
+
+  return {
+    result: {
+      outcome: 'pending',
       transactionId,
-      messageId,
-      invoiceNumber: String(input.invoiceNumber),
-      dateTime,
-      requestFrame,
-      target: endpoint(config),
-    });
-  }, input.requestId);
+      message: 'مبلغ به کارتخوان ارسال شد. کارت را بکشید و رمز را وارد کنید.',
+      shouldInquiry: false,
+      shouldRetry: false,
+      responseCode: '',
+    },
+    completion,
+  };
+}
+
+export async function purchase(input) {
+  const started = await startPurchase(input);
+  if (!started.completion) return started.result;
+  return started.completion;
 }
 
 export async function payBill(input) {

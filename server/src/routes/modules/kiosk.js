@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   confirmKioskPos,
   getKioskPosSettings,
+  getKioskPosTransaction,
   getUnpaidByNationalCode,
   inquiryKioskPos,
   pairKioskPos,
@@ -18,6 +19,7 @@ router.post('/pos/settings', saveKioskPosSettings);
 router.post('/pos/pair', pairKioskPos);
 router.post('/pos/pair/confirm', confirmKioskPos);
 router.post('/pos/purchase', payKioskWithPos);
+router.get('/pos/transactions/:id', getKioskPosTransaction);
 router.post('/pos/inquiry', inquiryKioskPos);
 
 export default router;

@@ -1,7 +1,7 @@
 import { getPool, sql } from '../lib/db.js';
 import { initializeWorkflow } from './workflow.controller.js';
 import { getPcPosPublicSettings, savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
-import { confirmPairing, inquiry, purchase, releaseStalePurchase, startPairing } from '../modules/pcpos/pcpos.service.js';
+import { confirmPairing, inquiry, paymentInProgress, releaseStalePurchase, startPairing, startPurchase } from '../modules/pcpos/pcpos.service.js';
 import { getLatestPurchaseByRequestId, getTransaction } from '../modules/pcpos/pcpos.store.js';
 
 /**
@@ -629,9 +629,19 @@ export async function payKioskWithPos(req, res, next) {
       }, { amount, paid: true }));
     }
     if (latest && (latest.Outcome === 'unknown' || latest.Outcome === 'pending')) {
+      if (paymentInProgress(request.RequestID)) {
+        return res.json({
+          outcome: 'pending',
+          transactionId: latest.Id,
+          message: 'مبلغ روی کارتخوان است. کارت را بکشید و رمز را وارد کنید.',
+          shouldInquiry: false,
+          shouldRetry: false,
+          amount
+        });
+      }
       const stale = await releaseStalePurchase(latest);
       if (stale.active) {
-        return res.status(409).json({
+        return res.json({
           message: 'پرداخت این پرونده همین حالا روی کارتخوان باز است. همان خرید را تمام یا لغو کنید',
           outcome: 'pending',
           shouldInquiry: false,
@@ -652,32 +662,103 @@ export async function payKioskWithPos(req, res, next) {
       }
     }
 
-    const result = await purchase({
+    const started = await startPurchase({
       amount,
       invoiceNumber: invoiceNumberFor(request),
       requestId: request.RequestID
     });
-    let paid = false;
-    if (result.outcome === 'success') {
-      await recordCardPayment(pool, {
-        request,
-        userId: user.Id,
-        amount,
-        rrn: result.rrn,
-        stan: result.stan,
-        responseCode: result.responseCode
-      });
-      paid = true;
-      if (result.printFailed) {
-        result.message = `پرداخت انجام شد اما رسید چاپ نشد. شماره مرجع: ${result.rrn || '-'}`;
-      }
+    if (!started.completion) {
+      return res.json(posPayload(started.result, { amount, paid: false }));
     }
-    return res.json(posPayload(result, { amount, paid }));
+    res.json(posPayload(started.result, { amount, paid: false }));
+    try {
+      const result = await started.completion;
+      if (result.outcome === 'success') {
+        await recordCardPayment(pool, {
+          request,
+          userId: user.Id,
+          amount,
+          rrn: result.rrn,
+          stan: result.stan,
+          responseCode: result.responseCode
+        });
+      }
+    } catch (error) {
+      console.error('[kiosk-pos] purchase follow-up failed:', error);
+    }
+    return;
   } catch (error) {
+    if (res.headersSent) {
+      console.error('[kiosk-pos] purchase failed after response:', error);
+      return;
+    }
     if (error.status) {
       return res.status(error.status).json({ message: error.message });
     }
     console.error('[kiosk-pos] purchase failed:', error);
+    next(error);
+  }
+}
+
+export async function getKioskPosTransaction(req, res, next) {
+  try {
+    const nationalCode = readNationalCode(req.query?.nationalCode);
+    const transactionId = Number(req.params.id);
+    if (!Number.isSafeInteger(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ message: 'شناسه تراکنش نامعتبر است' });
+    }
+    const stored = await getTransaction(transactionId);
+    if (!stored || stored.Kind !== 'purchase' || stored.RequestId == null) {
+      return res.status(404).json({ message: 'تراکنش پوز پیدا نشد' });
+    }
+    const pool = await getPool();
+    const user = await findKioskUser(pool, nationalCode);
+    if (!user) return res.status(404).json({ message: 'کاربری با این کد ملی یافت نشد' });
+    const request = await findOwnedRequest(pool, user.Id, stored.RequestId);
+    if (!request) return res.status(404).json({ message: 'این تراکنش به پرونده شما تعلق ندارد' });
+
+    if (stored.Outcome === 'pending') {
+      return res.json({
+        outcome: 'pending',
+        transactionId: stored.Id,
+        message: 'مبلغ روی کارتخوان است. کارت را بکشید و رمز را وارد کنید.',
+        shouldInquiry: false,
+        shouldRetry: false,
+        amount: stored.Amount == null ? null : Number(stored.Amount)
+      });
+    }
+
+    let paid = false;
+    const amount = Math.round(Number(stored.Amount) || 0);
+    if (stored.Outcome === 'success') {
+      await recordCardPayment(pool, {
+        request,
+        userId: user.Id,
+        amount,
+        rrn: stored.Rrn,
+        stan: stored.Stan,
+        responseCode: stored.ResponseCode
+      });
+      paid = true;
+    }
+    return res.json({
+      outcome: stored.Outcome,
+      message: stored.Outcome === 'success'
+        ? 'پرداخت با موفقیت انجام شد'
+        : (stored.ErrorMessage || 'پرداخت انجام نشد'),
+      responseCode: stored.ResponseCode || '',
+      rrn: stored.Rrn || null,
+      stan: stored.Stan || null,
+      transactionId: stored.Id,
+      shouldInquiry: stored.Outcome === 'unknown',
+      shouldRetry: stored.Outcome === 'failed' || stored.Outcome === 'cancelled',
+      printFailed: false,
+      paid,
+      amount
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error('[kiosk-pos] status read failed:', error);
     next(error);
   }
 }

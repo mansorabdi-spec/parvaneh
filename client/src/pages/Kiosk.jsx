@@ -28,7 +28,7 @@ async function postPos(path, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(270000)
+    signal: AbortSignal.timeout(60000)
   })
   const data = await res.json().catch(() => ({}))
   return { ok: res.ok, status: res.status, data }
@@ -175,10 +175,35 @@ export default function Kiosk() {
     setPosStatus({
       requestId: item.requestId,
       tone: data.outcome === 'unknown' || data.shouldInquiry ? 'warn' : 'error',
-      text: data.message || 'کارتخوان هنوز نتیجهٔ پرداخت را نفرستاده است',
+      text: data.message || 'نتیجهٔ پرداخت از کارتخوان مشخص نشد',
       transactionId: data.transactionId || null,
       shouldInquiry: Boolean(data.shouldInquiry),
       shouldRetry: data.shouldRetry !== false && data.outcome !== 'unknown'
+    })
+  }
+
+  const watchPayment = async (item, transactionId) => {
+    const started = Date.now()
+    while (Date.now() - started < 240000) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      try {
+        const res = await fetch(`/api/kiosk/pos/transactions/${transactionId}?nationalCode=${encodeURIComponent(nationalCode)}`)
+        const data = await res.json().catch(() => ({}))
+        if (data.outcome && data.outcome !== 'pending') {
+          await applyPosResult(item, data)
+          return
+        }
+      } catch {
+        // The card reader can still be finishing. Keep the waiting message.
+      }
+    }
+    setPosStatus({
+      requestId: item.requestId,
+      tone: 'warn',
+      text: 'مهلت انتظار تمام شد. اگر پرداخت روی کارتخوان انجام شده، استعلام بگیرید.',
+      transactionId,
+      shouldInquiry: true,
+      shouldRetry: false
     })
   }
 
@@ -198,12 +223,16 @@ export default function Kiosk() {
         nationalCode,
         requestId: item.requestId
       })
+      if (data.outcome === 'pending' && data.transactionId) {
+        await watchPayment(item, data.transactionId)
+        return
+      }
       await applyPosResult(item, data)
     } catch {
       setPosStatus({
         requestId: item.requestId,
         tone: 'warn',
-        text: 'پاسخ سرور نرسید. اگر مبلغ روی کارتخوان نیامده، پرداخت را دوباره بزنید. اگر آمده، خرید را تکرار نکنید و استعلام بگیرید.',
+        text: 'ارتباط با سرور قطع شد. اگر مبلغ روی کارتخوان آمده، پرداخت را همان‌جا تمام کنید؛ نتیجه را بعداً استعلام کنید.',
         shouldInquiry: false,
         shouldRetry: false
       })

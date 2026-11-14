@@ -81,6 +81,73 @@ export function parseFrame(raw) {
   };
 }
 
+function jsonResponseToParsed(json) {
+  const rawType = String(json.type || '');
+  const type = {
+    buy: 'POSBUY',
+    bill: 'POSBIL',
+    status: 'POSSTA',
+    cancel: 'POSCAN',
+    busy: 'POSBSY',
+  }[rawType] || rawType.toUpperCase();
+  let fields;
+  if (type === 'POSSTA') {
+    fields = [type, json.state == null ? '' : String(json.state)];
+    if (json.pin_digits != null && String(json.pin_digits) !== '') fields.push(String(json.pin_digits));
+  } else if (type === 'POSCAN') {
+    fields = [type, json.result == null ? '' : String(json.result)];
+  } else if (type === 'POSBSY') {
+    fields = [type];
+  } else {
+    const value = (key) => (json[key] == null ? '' : String(json[key]));
+    fields = [
+      type,
+      value('response_code'),
+      value('amount'),
+      value('rrn'),
+      value('stan'),
+      value('date_time'),
+      value('merchant_number'),
+      value('terminal_id'),
+      value('pan'),
+      value('message_id'),
+      value('bill_id'),
+      value('payment_id'),
+    ];
+  }
+  return {
+    ok: true,
+    malformed: false,
+    checksumValid: true,
+    type,
+    fields,
+    inner: '',
+    receivedChecksum: '',
+    expectedChecksum: '',
+  };
+}
+
+export function parsePosPayload(raw) {
+  const text = String(raw ?? '').replace(/^\uFEFF/, '').trim();
+  if (text.startsWith('{')) {
+    try {
+      return jsonResponseToParsed(JSON.parse(text));
+    } catch {
+      return {
+        ok: false,
+        malformed: true,
+        checksumValid: false,
+        type: '',
+        fields: [],
+        inner: '',
+        receivedChecksum: '',
+        expectedChecksum: '',
+      };
+    }
+  }
+  return parseFrame(text);
+}
+
 export function formatDateTime(date = new Date()) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;

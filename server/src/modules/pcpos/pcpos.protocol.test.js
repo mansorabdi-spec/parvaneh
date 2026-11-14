@@ -10,6 +10,7 @@ import {
   interpretPosResponse,
   parseFrame,
   parsePairToken,
+  parsePosPayload,
 } from './pcpos.protocol.js';
 
 test('status frame is the CSV control message', () => {
@@ -133,6 +134,14 @@ test('masked PAN does not steal the checksum asterisk', () => {
   const result = interpretPosResponse(parsed, { expectedType: 'POSBUY', expectedMessageId: '7' });
   assert.equal(result.outcome, 'success');
   assert.equal(result.rrn, '000000123456');
+});
+
+test('json buy response is a successful payment', () => {
+  const raw = '{"type":"buy","response_code":"000","amount":"0000009295000","rrn":"123456789012","stan":"000123","date_time":"20261114162400","merchant_number":"4999182","terminal_id":"05832963","pan":"603799DDDDDD1234","message_id":"1"}';
+  const result = interpretPosResponse(parsePosPayload(raw), { expectedType: 'POSBUY', expectedMessageId: '1' });
+  assert.equal(result.outcome, 'success');
+  assert.equal(result.rrn, '123456789012');
+  assert.equal(result.amount, '0000009295000');
 });
 
 test('approved response code is three digits', () => {
