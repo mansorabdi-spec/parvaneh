@@ -7,6 +7,7 @@ import {
   buildPurchaseFrame,
   buildStatusFrame,
   formatDateTime,
+  displayedPaymentReady,
   interpretPosResponse,
   isCompletePosBody,
   isLivePosState,
@@ -295,7 +296,9 @@ async function settle(id, transport, expect, { deviceAccepted = false } = {}) {
     terminalId: interpreted.terminalId || null,
     dateTime: interpreted.dateTime || null,
     amount: interpreted.amount || null,
-    errorMessage: interpreted.outcome === 'success' ? null : interpreted.message,
+    errorMessage: interpreted.printFailed
+      ? interpreted.message
+      : (interpreted.outcome === 'success' ? null : interpreted.message),
     deviceAccepted: deviceAccepted || interpreted.outcome === 'success',
   });
   return { ...interpreted, httpStatus: transport.httpStatus, responseFrame: transport.body };
@@ -314,6 +317,28 @@ function readStatus(transport) {
     return { kind: 'state', state, live: isLivePosState(state), body: transport.body };
   }
   return { kind: 'other', body: transport.body };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const PRINT_NOT_REQUIRED = 'پرداخت انجام شد اما رسید چاپ نشد';
+
+async function watchPaymentScreen(config, stopped) {
+  const timeline = [];
+  while (!stopped()) {
+    await sleep(1500);
+    if (stopped()) return null;
+    const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 4000 });
+    if (stopped()) return null;
+    const status = readStatus(transport);
+    if (status.kind !== 'state') continue;
+    timeline.push({ state: status.state, at: Date.now() });
+    console.log(`[pcpos] device state=${status.state}`);
+    if (displayedPaymentReady(timeline)) return { state: status.state };
+  }
+  return null;
 }
 
 function logResult(kind, messageId, result) {
@@ -379,21 +404,86 @@ export async function startPurchase(input) {
   }
 
   const completion = (async () => {
+    const expect = { expectedType: 'POSBUY', expectedMessageId: messageId };
+    const details = {
+      transactionId,
+      messageId,
+      invoiceNumber: String(input.invoiceNumber),
+      dateTime,
+      requestFrame,
+      target: endpoint(config),
+    };
     try {
-      const transport = await postFrame(requestFrame, config);
-      const result = await settle(transactionId, transport, {
-        expectedType: 'POSBUY',
-        expectedMessageId: messageId,
-      }, { deviceAccepted: !transport.unreachable });
-      logResult('purchase', messageId, result);
-      return publicResult(result, {
-        transactionId,
-        messageId,
-        invoiceNumber: String(input.invoiceNumber),
-        dateTime,
-        requestFrame,
-        target: endpoint(config),
+      const buyTask = postFrame(requestFrame, config);
+      let stopWatch = false;
+      const screenTask = watchPaymentScreen(config, () => stopWatch);
+      let first;
+      try {
+        first = await Promise.race([
+          buyTask.then((transport) => ({ source: 'body', transport })),
+          screenTask.then((screen) => ({ source: 'screen', screen })),
+        ]);
+      } finally {
+        stopWatch = true;
+      }
+
+      let transport = first.source === 'body' ? first.transport : null;
+      if (!transport && first.screen) {
+        console.log(`[pcpos] result is on the display (${first.screen.state}); the receipt is not required`);
+        transport = await Promise.race([
+          buyTask,
+          sleep(5000).then(() => null),
+        ]);
+      }
+      if (!transport && first.source === 'screen' && !first.screen) {
+        transport = await buyTask;
+      }
+
+      if (transport) {
+        const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
+        logResult('purchase', messageId, result);
+        return publicResult(result, details);
+      }
+
+      await updateTransaction(transactionId, {
+        outcome: 'success',
+        errorMessage: PRINT_NOT_REQUIRED,
+        deviceAccepted: true,
+        responseCode: '000',
       });
+      console.log(`[pcpos] purchase messageId=${messageId} outcome=success code=000 receipt=not-printed`);
+      buyTask.then(async (late) => {
+        if (!late || late.transportError || late.httpStatus !== 200) return;
+        const interpreted = interpretPosResponse(parsePosPayload(late.body), expect);
+        if (interpreted.outcome !== 'success') {
+          console.log(`[pcpos] late device code ${interpreted.responseCode || '-'} kept the paid result`);
+          return;
+        }
+        await updateTransaction(transactionId, {
+          outcome: 'success',
+          responseFrame: late.body,
+          responseCode: interpreted.responseCode || '000',
+          rrn: interpreted.rrn || null,
+          stan: interpreted.stan || null,
+          pan: interpreted.pan || null,
+          merchantId: interpreted.merchantId || null,
+          terminalId: interpreted.terminalId || null,
+          dateTime: interpreted.dateTime || null,
+          amount: interpreted.amount || null,
+          errorMessage: interpreted.printFailed ? interpreted.message : null,
+          deviceAccepted: true,
+        });
+      }).catch((error) => {
+        console.error('[pcpos] could not attach the late receipt result:', error.message);
+      });
+      return publicResult({
+        outcome: 'success',
+        printFailed: true,
+        shouldInquiry: false,
+        shouldRetry: false,
+        responseCode: '000',
+        message: PRINT_NOT_REQUIRED,
+      }, details);
     } catch (error) {
       const message = error.message || 'پرداخت روی کارتخوان ناتمام ماند';
       await updateTransaction(transactionId, { outcome: 'failed', errorMessage: message }).catch(() => {});

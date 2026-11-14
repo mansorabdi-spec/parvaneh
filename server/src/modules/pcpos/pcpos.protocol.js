@@ -341,6 +341,42 @@ export function isLivePosState(state) {
   return LIVE_STATES.has(state);
 }
 
+const CUSTOMER_STATES = new Set([
+  'input',
+  'confirmation',
+  'card_presentation',
+  'application_selection',
+  'pin_entry',
+]);
+
+export function displayedPaymentReady(timeline, now = Date.now(), limits = {}) {
+  const processingMs = limits.processingMs ?? 12000;
+  const busyMs = limits.busyMs ?? 2000;
+  let sawActivity = false;
+  let processingSince = null;
+  let busySince = null;
+  for (const item of timeline) {
+    if (CUSTOMER_STATES.has(item.state)) {
+      sawActivity = true;
+      processingSince = null;
+      busySince = null;
+    } else if (item.state === 'processing') {
+      sawActivity = true;
+      if (processingSince == null) processingSince = item.at;
+      busySince = null;
+    } else if (item.state === 'busy' && sawActivity) {
+      if (busySince == null) busySince = item.at;
+      processingSince = null;
+    } else {
+      processingSince = null;
+      busySince = null;
+    }
+  }
+  if (busySince != null && now - busySince >= busyMs) return true;
+  if (processingSince != null && now - processingSince >= processingMs) return true;
+  return false;
+}
+
 export function interpretPosResponse(parsed, { expectedType, expectedMessageId } = {}) {
   if (!parsed || parsed.malformed || !parsed.checksumValid) {
     return {

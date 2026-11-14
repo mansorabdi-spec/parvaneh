@@ -9,6 +9,7 @@ import {
   buildPurchaseFrame,
   buildStatusFrame,
   checksum,
+  displayedPaymentReady,
   interpretPosResponse,
   isCompletePosBody,
   parseFrame,
@@ -199,6 +200,26 @@ test('response 600 means nothing was charged and payment can be sent again', () 
   assert.equal(result.outcome, 'cancelled');
   assert.equal(result.shouldInquiry, false);
   assert.equal(result.shouldRetry, true);
+});
+
+test('a result left on the display is done even when the receipt is not printed', () => {
+  const start = 1_000_000;
+  assert.equal(displayedPaymentReady([
+    { state: 'card_presentation', at: start },
+    { state: 'pin_entry', at: start + 1000 },
+    { state: 'processing', at: start + 2000 },
+  ], start + 5000), false);
+  assert.equal(displayedPaymentReady([
+    { state: 'pin_entry', at: start },
+    { state: 'processing', at: start + 1000 },
+  ], start + 13_000), true);
+  assert.equal(displayedPaymentReady([
+    { state: 'processing', at: start },
+    { state: 'busy', at: start + 3000 },
+  ], start + 5000), true);
+  assert.equal(displayedPaymentReady([
+    { state: 'busy', at: start },
+  ], start + 10_000), false);
 });
 
 test('print failure still counts as a completed payment', () => {

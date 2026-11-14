@@ -739,10 +739,11 @@ export async function getKioskPosTransaction(req, res, next) {
       });
       paid = true;
     }
+    const printFailed = stored.Outcome === 'success' && /چاپ/.test(stored.ErrorMessage || '');
     return res.json({
       outcome: stored.Outcome,
       message: stored.Outcome === 'success'
-        ? 'پرداخت با موفقیت انجام شد'
+        ? (printFailed ? 'پرداخت انجام شد اما رسید چاپ نشد.' : 'پرداخت با موفقیت انجام شد')
         : (stored.ErrorMessage || 'پرداخت انجام نشد'),
       responseCode: stored.ResponseCode || '',
       rrn: stored.Rrn || null,
@@ -750,7 +751,7 @@ export async function getKioskPosTransaction(req, res, next) {
       transactionId: stored.Id,
       shouldInquiry: stored.Outcome === 'unknown',
       shouldRetry: stored.Outcome === 'failed' || stored.Outcome === 'cancelled',
-      printFailed: false,
+      printFailed,
       paid,
       amount
     });
