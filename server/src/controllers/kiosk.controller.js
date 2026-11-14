@@ -671,21 +671,19 @@ export async function payKioskWithPos(req, res, next) {
       return res.json(posPayload(started.result, { amount, paid: false }));
     }
     res.json(posPayload(started.result, { amount, paid: false }));
-    try {
-      const result = await started.completion;
-      if (result.outcome === 'success') {
-        await recordCardPayment(pool, {
-          request,
-          userId: user.Id,
-          amount,
-          rrn: result.rrn,
-          stan: result.stan,
-          responseCode: result.responseCode
-        });
-      }
-    } catch (error) {
+    started.completion.then(async (result) => {
+      if (result.outcome !== 'success') return;
+      await recordCardPayment(pool, {
+        request,
+        userId: user.Id,
+        amount,
+        rrn: result.rrn,
+        stan: result.stan,
+        responseCode: result.responseCode
+      });
+    }).catch((error) => {
       console.error('[kiosk-pos] purchase follow-up failed:', error);
-    }
+    });
     return;
   } catch (error) {
     if (res.headersSent) {

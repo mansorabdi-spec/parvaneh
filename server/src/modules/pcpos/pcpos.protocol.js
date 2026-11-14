@@ -127,6 +127,23 @@ function jsonResponseToParsed(json) {
   };
 }
 
+export function isCompletePosBody(raw) {
+  const text = String(raw ?? '').replace(/^\uFEFF/, '').trim();
+  if (!text) return false;
+  if (text.startsWith('{')) {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (!text.startsWith('$')) return false;
+  const star = text.lastIndexOf('*');
+  if (star < 1) return false;
+  return /^[0-9A-Fa-f]{2}$/.test(text.slice(star + 1).trim());
+}
+
 export function parsePosPayload(raw) {
   const text = String(raw ?? '').replace(/^\uFEFF/, '').trim();
   if (text.startsWith('{')) {

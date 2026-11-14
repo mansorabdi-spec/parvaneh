@@ -1,4 +1,4 @@
-import axios from 'axios';
+import http from 'http';
 import { assertPcPosConfigured, forgetPcPosToken, getPcPosConfig } from './pcpos.config.js';
 import {
   PcPosError,
@@ -8,6 +8,7 @@ import {
   buildStatusFrame,
   formatDateTime,
   interpretPosResponse,
+  isCompletePosBody,
   isLivePosState,
   parsePairToken,
   parsePosPayload,
@@ -64,7 +65,7 @@ function portHint(config, lead) {
 
 function transportFailure(error, config) {
   const code = error.code || '';
-  const timedOut = code === 'ECONNABORTED' || code === 'ETIMEDOUT' || code === 'ERR_CANCELED' || axios.isCancel?.(error);
+  const timedOut = code === 'ECONNABORTED' || code === 'ETIMEDOUT' || code === 'ERR_CANCELED';
   const notDelivered = ['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'EAI_AGAIN', 'EADDRNOTAVAIL'].includes(code);
   if (notDelivered) {
     return {
@@ -103,27 +104,73 @@ function pairingRequired() {
   };
 }
 
-async function postFrame(frame, config, options = {}) {
+export function postFrame(frame, config, options = {}) {
   const timeoutMs = options.timeoutMs ?? config.timeoutMs;
-  const headers = {};
-  if (frame != null) headers['Content-Type'] = 'text/plain; charset=utf-8';
-  if (options.auth !== false && config.token) headers.Authorization = `Bearer ${config.token}`;
-  try {
-    const response = await axios.post(endpoint(config, options.path || '/api/v1'), frame == null ? undefined : frame, {
-      headers,
-      responseType: 'text',
-      timeout: timeoutMs,
-      signal: options.signal,
-      maxRedirects: 0,
-      transformRequest: [(data) => (data == null ? data : data)],
-      transformResponse: [(data) => (typeof data === 'string' || data == null ? (data ?? '') : String(data))],
-      validateStatus: () => true,
-    });
-    const body = typeof response.data === 'string' ? response.data : String(response.data ?? '');
-    return { httpStatus: response.status, body };
-  } catch (error) {
-    return transportFailure(error, config);
+  const payload = frame == null ? null : Buffer.from(String(frame), 'utf8');
+  const headers = {
+    Connection: 'close',
+    Accept: 'text/plain, application/json',
+    'Accept-Encoding': 'identity',
+  };
+  if (payload) {
+    headers['Content-Type'] = 'text/plain; charset=utf-8';
+    headers['Content-Length'] = payload.length;
+  } else {
+    headers['Content-Length'] = 0;
   }
+  if (options.auth !== false && config.token) headers.Authorization = `Bearer ${config.token}`;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.destroy();
+      resolve(result);
+    };
+    const req = http.request({
+      protocol: 'http:',
+      hostname: config.host,
+      port: config.port,
+      path: options.path || '/api/v1',
+      method: 'POST',
+      headers,
+      agent: false,
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      req.destroy();
+    }, timeoutMs);
+    if (options.signal) {
+      if (options.signal.aborted) {
+        req.destroy();
+      } else {
+        options.signal.addEventListener('abort', () => req.destroy(), { once: true });
+      }
+    }
+    req.on('response', (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => {
+        chunks.push(chunk);
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (isCompletePosBody(text)) finish({ httpStatus: res.statusCode, body: text.trim() });
+      });
+      res.on('end', () => {
+        finish({ httpStatus: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
+      });
+      res.on('error', (error) => {
+        if (timedOut) error.code = 'ETIMEDOUT';
+        finish(transportFailure(error, config));
+      });
+    });
+    req.on('error', (error) => {
+      if (timedOut) error.code = 'ETIMEDOUT';
+      finish(transportFailure(error, config));
+    });
+    req.end(payload || undefined);
+  });
 }
 
 function httpDecision(transport) {

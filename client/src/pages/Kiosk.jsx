@@ -185,7 +185,6 @@ export default function Kiosk() {
   const watchPayment = async (item, transactionId) => {
     const started = Date.now()
     while (Date.now() - started < 240000) {
-      await new Promise((resolve) => setTimeout(resolve, 2000))
       try {
         const res = await fetch(`/api/kiosk/pos/transactions/${transactionId}?nationalCode=${encodeURIComponent(nationalCode)}`)
         const data = await res.json().catch(() => ({}))
@@ -196,6 +195,7 @@ export default function Kiosk() {
       } catch {
         // The card reader can still be finishing. Keep the waiting message.
       }
+      await new Promise((resolve) => setTimeout(resolve, 1000))
     }
     setPosStatus({
       requestId: item.requestId,
@@ -626,7 +626,9 @@ export default function Kiosk() {
                                   cursor: busyId != null ? 'not-allowed' : 'pointer'
                                 }}
                               >
-                                {busyId === item.requestId ? 'در حال ارتباط با دستگاه...' : 'پرداخت با دستگاه پوز'}
+                                {busyId === item.requestId
+                                  ? (posStatus?.tone === 'wait' ? 'منتظر نتیجه کارتخوان...' : 'در حال ارتباط با دستگاه...')
+                                  : 'پرداخت با دستگاه پوز'}
                               </button>
                             )}
                           </div>

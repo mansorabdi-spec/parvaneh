@@ -1,5 +1,7 @@
+import http from 'node:http';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { postFrame } from './pcpos.service.js';
 import {
   buildBillFrame,
   buildFrame,
@@ -8,6 +10,7 @@ import {
   buildStatusFrame,
   checksum,
   interpretPosResponse,
+  isCompletePosBody,
   parseFrame,
   parsePairToken,
   parsePosPayload,
@@ -134,6 +137,38 @@ test('masked PAN does not steal the checksum asterisk', () => {
   const result = interpretPosResponse(parsed, { expectedType: 'POSBUY', expectedMessageId: '7' });
   assert.equal(result.outcome, 'success');
   assert.equal(result.rrn, '000000123456');
+});
+
+test('the terminal result is read even if it leaves the connection open', async () => {
+  const frame = '$POSBUY,000,11000,123456789012,000123,20261114184500,4999182,05832963,603799******1234,1,*43\r\n';
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { Connection: 'keep-alive' });
+    res.write(frame);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const result = await postFrame('$PCBUY,11000,1,20261114184500,1,0,9999999999999999,*00\r\n', {
+      host: '127.0.0.1',
+      port,
+      timeoutMs: 3000,
+      token: '',
+    });
+    assert.equal(result.httpStatus, 200);
+    assert.match(result.body, /^\$POSBUY,/);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('a purchase body is complete only when the checksum is at the end', () => {
+  const frame = '$POSBUY,000,0000000011000,123456789012,000123,20261114184500,4999182,05832963,603799******1234,1,*43\r\n';
+  assert.equal(isCompletePosBody(frame.slice(0, 40)), false);
+  assert.equal(isCompletePosBody(frame), true);
+  assert.equal(isCompletePosBody('{"type":"buy","response_code":"000"}'), true);
+  assert.equal(isCompletePosBody('{"type":"buy"'), false);
 });
 
 test('json buy response is a successful payment', () => {
