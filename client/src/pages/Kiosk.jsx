@@ -160,9 +160,12 @@ export default function Kiosk() {
     }
     if (data.outcome === 'success' || data.paid) {
       const reference = data.rrn ? ` شماره مرجع: ${toFarsiDigits(data.rrn)}` : ''
+      const successText = data.printFailed
+        ? 'پرداخت انجام شد اما رسید چاپ نشد.'
+        : (data.message || 'پرداخت با موفقیت انجام شد.')
       setBanner({
         tone: 'success',
-        text: `${data.printFailed ? 'پرداخت انجام شد اما رسید چاپ نشد.' : 'پرداخت با موفقیت انجام شد.'}${reference}`
+        text: `${successText}${reference}`
       })
       setPosStatus(null)
       try {

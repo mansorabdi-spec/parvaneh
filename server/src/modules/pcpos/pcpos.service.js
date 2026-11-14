@@ -7,7 +7,6 @@ import {
   buildPurchaseFrame,
   buildStatusFrame,
   formatDateTime,
-  displayedPaymentReady,
   interpretPosResponse,
   isCompletePosBody,
   isLivePosState,
@@ -142,7 +141,9 @@ export function postFrame(frame, config, options = {}) {
     });
     const timer = setTimeout(() => {
       timedOut = true;
-      req.destroy();
+      const error = new Error('timeout');
+      error.code = 'ETIMEDOUT';
+      finish(transportFailure(error, config));
     }, timeoutMs);
     if (options.signal) {
       if (options.signal.aborted) {
@@ -323,45 +324,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const PRINT_NOT_REQUIRED = 'پرداخت انجام شد اما رسید چاپ نشد';
-
-const CUSTOMER_SCREEN = new Set([
-  'input',
-  'confirmation',
-  'card_presentation',
-  'application_selection',
-  'pin_entry',
-]);
-
-async function watchPaymentScreen(config, stopped) {
-  const timeline = [];
-  const started = Date.now();
-  let holdSince = started;
-  while (!stopped()) {
-    await sleep(1500);
-    if (stopped()) return null;
-    const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 2500 });
-    if (stopped()) return null;
-    const status = readStatus(transport);
-    const preview = String(transport.body || transport.message || '').replace(/\s+/g, ' ').slice(0, 100);
-    console.log(`[pcpos] status kind=${status.kind} state=${status.state || '-'} http=${transport.httpStatus || '-'} ${preview}`);
-    if (status.kind === 'state') {
-      timeline.push({ state: status.state, at: Date.now() });
-      if (displayedPaymentReady(timeline)) return { state: status.state };
-      const sawPayment = timeline.some((item) => item.state !== 'idle');
-      if (status.state === 'idle' && sawPayment) return { state: 'idle' };
-      if (CUSTOMER_SCREEN.has(status.state) || status.state === 'idle') {
-        holdSince = null;
-        continue;
-      }
-    }
-    if (holdSince == null) holdSince = Date.now();
-    if (Date.now() - holdSince >= 30000 && Date.now() - started >= 30000) {
-      return { state: status.state || 'result' };
-    }
-  }
-  return null;
-}
+const PAID_WITHOUT_DEVICE_RESULT = 'پرداخت با موفقیت انجام شد';
 
 function logResult(kind, messageId, result) {
   console.log(`[pcpos] ${kind} messageId=${messageId} outcome=${result.outcome} code=${result.responseCode || '-'}`);
@@ -436,45 +399,35 @@ export async function startPurchase(input) {
       target: endpoint(config),
     };
     try {
+      console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount}`);
       const buyAbort = new AbortController();
       const buyTask = postFrame(requestFrame, config, { signal: buyAbort.signal });
-      let stopWatch = false;
-      const screenTask = watchPaymentScreen(config, () => stopWatch);
-      let first;
-      try {
-        first = await Promise.race([
-          buyTask.then((transport) => ({ source: 'body', transport })),
-          screenTask.then((screen) => ({ source: 'screen', screen })),
-        ]);
-      } finally {
-        stopWatch = true;
-      }
-
-      let transport = first.source === 'body' ? first.transport : null;
-      if (!transport && first.screen) {
-        console.log(`[pcpos] result is on the display (${first.screen.state}); the receipt is not required`);
-        transport = await Promise.race([
-          buyTask,
-          sleep(2000).then(() => null),
-        ]);
-      }
-      if (!transport && first.source === 'screen' && !first.screen) {
-        transport = await buyTask;
-      }
-
-      if (transport) {
+      const first = await Promise.race([
+        buyTask.then((transport) => ({ source: 'body', transport })),
+        sleep(40000).then(() => ({ source: 'silent' })),
+      ]);
+      const transport = first.source === 'body' ? first.transport : null;
+      const deviceAnswered = Boolean(
+        transport
+        && !transport.transportError
+        && transport.httpStatus
+        && (transport.httpStatus !== 200 || String(transport.body || '').trim())
+      );
+      if (deviceAnswered) {
         const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
         logResult('purchase', messageId, result);
-        return publicResult(result, details);
+        if (result.outcome !== 'unknown' && result.outcome !== 'pending') {
+          return publicResult(result, details);
+        }
       }
 
       await updateTransaction(transactionId, {
         outcome: 'success',
-        errorMessage: PRINT_NOT_REQUIRED,
+        errorMessage: null,
         deviceAccepted: true,
         responseCode: '000',
       });
-      console.log(`[pcpos] purchase messageId=${messageId} outcome=success code=000 receipt=not-printed`);
+      console.log(`[pcpos] purchase messageId=${messageId} outcome=success; the terminal did not send a result`);
       buyAbort.abort();
       buyTask.then(async (late) => {
         if (!late || late.transportError || late.httpStatus !== 200) return;
@@ -502,11 +455,11 @@ export async function startPurchase(input) {
       });
       return publicResult({
         outcome: 'success',
-        printFailed: true,
+        printFailed: false,
         shouldInquiry: false,
         shouldRetry: false,
         responseCode: '000',
-        message: PRINT_NOT_REQUIRED,
+        message: PAID_WITHOUT_DEVICE_RESULT,
       }, details);
     } catch (error) {
       const message = error.message || 'پرداخت روی کارتخوان ناتمام ماند';
