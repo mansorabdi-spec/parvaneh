@@ -224,6 +224,17 @@ export default function Kiosk() {
           signal: AbortSignal.timeout(5000)
         })
         const data = await res.json().catch(() => ({}))
+        if (!res.ok && !data.outcome) {
+          setPosStatus({
+            requestId: item.requestId,
+            tone: 'error',
+            text: data.message || `خواندن نتیجهٔ تراکنش ناموفق بود (${res.status})`,
+            transactionId,
+            shouldInquiry: false,
+            shouldRetry: false
+          })
+          return
+        }
         if (data.outcome && data.outcome !== 'pending') {
           await applyPosResult(item, data)
           return

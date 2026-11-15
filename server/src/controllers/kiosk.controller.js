@@ -734,7 +734,13 @@ export async function getKioskPosTransaction(req, res, next) {
     }
     const stored = await getTransaction(transactionId);
     if (!stored || stored.Kind !== 'purchase' || stored.RequestId == null) {
-      return res.status(404).json({ message: 'تراکنش پوز پیدا نشد' });
+      return res.json({
+        outcome: 'failed',
+        transactionId,
+        message: 'نتیجهٔ این پرداخت در برنامه ثبت نشده است. اگر مبلغ از کارت کم شده، همین پرونده را دوباره پرداخت نکنید.',
+        shouldInquiry: false,
+        shouldRetry: false
+      });
     }
     const pool = await getPool();
     const user = await findKioskUser(pool, nationalCode);
@@ -756,15 +762,19 @@ export async function getKioskPosTransaction(req, res, next) {
     let paid = false;
     const amount = Math.round(Number(stored.Amount) || 0);
     if (stored.Outcome === 'success') {
-      await recordCardPayment(pool, {
-        request,
-        userId: user.Id,
-        amount,
-        rrn: stored.Rrn,
-        stan: stored.Stan,
-        responseCode: stored.ResponseCode
-      });
-      paid = true;
+      try {
+        await recordCardPayment(pool, {
+          request,
+          userId: user.Id,
+          amount,
+          rrn: stored.Rrn,
+          stan: stored.Stan,
+          responseCode: stored.ResponseCode
+        });
+        paid = true;
+      } catch (error) {
+        posLog(`[kiosk-pos] approved payment was not recorded while reading status: ${error.stack || error.message}`);
+      }
     }
     const printFailed = stored.Outcome === 'success' && /چاپ/.test(stored.ErrorMessage || '');
     return res.json({
@@ -787,9 +797,14 @@ export async function getKioskPosTransaction(req, res, next) {
       amount
     });
   } catch (error) {
-    if (error.status) return res.status(error.status).json({ message: error.message });
-    console.error('[kiosk-pos] status read failed:', error);
-    next(error);
+    posLog(`[kiosk-pos] status read failed: ${error.stack || error.message}`);
+    if (res.headersSent) return;
+    return res.status(error.status || 500).json({
+      outcome: 'failed',
+      message: error.message || 'خواندن نتیجهٔ تراکنش ناموفق بود',
+      shouldInquiry: false,
+      shouldRetry: false
+    });
   }
 }
 
