@@ -51,7 +51,16 @@ async function postPos(path, body) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(180000)
   })
-  const data = await res.json().catch(() => ({}))
+  const text = await res.text()
+  let data = {}
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = { message: text.slice(0, 240) }
+    }
+  }
+  if (!res.ok && !data.message) data.message = `خطای سرور ${res.status}`
   return { ok: res.ok, status: res.status, data }
 }
 
@@ -241,17 +250,35 @@ export default function Kiosk() {
     setPosStatus({
       requestId: item.requestId,
       tone: 'wait',
-      text: `مبلغ ${formatAmount(item.payableAmount)} ریال به کارتخوان ارسال شد. کارت را بکشید و رمز را وارد کنید. تا پایان کار روی دستگاه همین صفحه می‌ماند.`,
+      text: 'در حال فرستادن مبلغ به کارتخوان...',
       shouldInquiry: false,
       shouldRetry: false
     })
     try {
-      const { data } = await postPos('/api/kiosk/pos/purchase', {
+      const { ok, data } = await postPos('/api/kiosk/pos/purchase', {
         nationalCode,
         requestId: item.requestId
       })
       if (data.outcome === 'pending' && data.transactionId) {
+        setPosStatus({
+          requestId: item.requestId,
+          tone: 'wait',
+          text: `مبلغ ${formatAmount(item.payableAmount)} ریال روی کارتخوان است. کارت را بکشید و رمز را وارد کنید. نتیجهٔ تراکنش بعد از پایان کار همین‌جا می‌آید.`,
+          shouldInquiry: false,
+          shouldRetry: false,
+          transactionId: data.transactionId
+        })
         await watchPayment(item, data.transactionId)
+        return
+      }
+      if (!ok && !data.outcome) {
+        setPosStatus({
+          requestId: item.requestId,
+          tone: 'error',
+          text: data.message || 'خطای سرور',
+          shouldInquiry: false,
+          shouldRetry: false
+        })
         return
       }
       await applyPosResult(item, data)

@@ -60,7 +60,7 @@ function endpoint(config, path = '/api/v1') {
 }
 
 function portHint(config, lead) {
-  return `${lead} آدرس فعلی ${config.host}:${config.port} است. پورت را از تنظیمات HTTP خود کارتخوان بخوانید. در راهنمای شرکت نمونهٔ پورت ۱۷۰۰۰ است؛ پورت ۸۰ معمولاً سرویس PC-POS نیست و مبلغ روی دستگاه نمی‌آید.`;
+  return `${lead} آدرس فعلی ${config.host}:${config.port} است.`;
 }
 
 function transportFailure(error, config) {

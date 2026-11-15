@@ -1,8 +1,24 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getPool, sql } from '../lib/db.js';
 import { initializeWorkflow } from './workflow.controller.js';
 import { getPcPosPublicSettings, savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
 import { confirmPairing, inquiry, paymentInProgress, releaseStalePurchase, startPairing, startPurchase } from '../modules/pcpos/pcpos.service.js';
 import { getLatestPurchaseByRequestId, getTransaction } from '../modules/pcpos/pcpos.store.js';
+
+const posLogFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/pcpos.log');
+
+function posLog(line) {
+  const text = `${new Date().toISOString()} ${line}\n`;
+  try {
+    fs.mkdirSync(path.dirname(posLogFile), { recursive: true });
+    fs.appendFileSync(posLogFile, text);
+  } catch {
+    // A log failure must not change the payment result.
+  }
+  console.log(text.trim());
+}
 
 /**
  * Parse number from string (handles Persian/Arabic digits)
@@ -591,7 +607,7 @@ function readNationalCode(value) {
   return nationalCode;
 }
 
-export async function payKioskWithPos(req, res, next) {
+export async function payKioskWithPos(req, res) {
   try {
     const nationalCode = readNationalCode(req.body?.nationalCode);
     const requestId = Number(req.body?.requestId);
@@ -672,11 +688,15 @@ export async function payKioskWithPos(req, res, next) {
       requestId: request.RequestID
     });
     if (!started.completion) {
+      posLog(`[kiosk-pos] not sent request=${request.RequestID} message=${started.result?.message || '-'}`);
       return res.json(posPayload(started.result, { amount, paid: false }));
     }
-    const result = await started.completion;
-    let paid = false;
-    if (result.outcome === 'success') {
+    // Answer the page now. The card reader keeps its own HTTP response open until
+    // the customer finishes, and that wait must not be the browser request.
+    res.json(posPayload(started.result, { amount, paid: false }));
+    started.completion.then(async (result) => {
+      posLog(`[kiosk-pos] device result request=${request.RequestID} outcome=${result.outcome} code=${result.responseCode || '-'} rrn=${result.rrn || '-'}`);
+      if (result.outcome !== 'success') return;
       try {
         await recordCardPayment(pool, {
           request,
@@ -686,23 +706,22 @@ export async function payKioskWithPos(req, res, next) {
           stan: result.stan,
           responseCode: result.responseCode
         });
-        paid = true;
       } catch (error) {
-        console.error('[kiosk-pos] card payment was approved but was not recorded:', error);
+        posLog(`[kiosk-pos] approved payment was not recorded: ${error.stack || error.message}`);
       }
-    }
-    console.log(`[pcpos] kiosk result outcome=${result.outcome} code=${result.responseCode || '-'} rrn=${result.rrn || '-'}`);
-    return res.json(posPayload(result, { amount, paid }));
+    }).catch((error) => {
+      posLog(`[kiosk-pos] purchase failed after response: ${error.stack || error.message}`);
+    });
+    return;
   } catch (error) {
-    if (res.headersSent) {
-      console.error('[kiosk-pos] purchase failed after response:', error);
-      return;
-    }
-    if (error.status) {
-      return res.status(error.status).json({ message: error.message });
-    }
-    console.error('[kiosk-pos] purchase failed:', error);
-    next(error);
+    posLog(`[kiosk-pos] purchase failed: ${error.stack || error.message}`);
+    if (res.headersSent) return;
+    return res.status(error.status || 500).json({
+      outcome: 'failed',
+      message: error.message || 'خطای داخلی سرور',
+      shouldRetry: false,
+      shouldInquiry: false
+    });
   }
 }
 
