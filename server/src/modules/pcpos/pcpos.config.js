@@ -9,8 +9,8 @@ function readTimeout() {
 }
 
 function readPort(value) {
-  const port = Number(value ?? 17000);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return 17000;
+  const port = Number(value ?? 80);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 80;
   return port;
 }
 
@@ -26,7 +26,7 @@ export function getPcPosConfig() {
   const saved = readSession();
   const applicationId = process.env.PCPOS_APPLICATION_ID;
   const host = String(saved.host || process.env.PCPOS_HOST || '').trim();
-  const portSource = saved.port || process.env.PCPOS_PORT || 17000;
+  const portSource = saved.port || process.env.PCPOS_PORT || 80;
   return {
     host,
     port: readPort(portSource),

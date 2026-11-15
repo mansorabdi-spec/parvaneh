@@ -49,7 +49,7 @@ async function postPos(path, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60000)
+    signal: AbortSignal.timeout(180000)
   })
   const data = await res.json().catch(() => ({}))
   return { ok: res.ok, status: res.status, data }
@@ -63,7 +63,7 @@ export default function Kiosk() {
   const [busyId, setBusyId] = useState(null)
   const [posStatus, setPosStatus] = useState(null)
   const [banner, setBanner] = useState(null)
-  const [device, setDevice] = useState({ host: '', port: '17000', paired: false })
+  const [device, setDevice] = useState({ host: '', port: '80', paired: false })
   const [pairCode, setPairCode] = useState('')
   const [deviceNote, setDeviceNote] = useState('')
   const [deviceBusy, setDeviceBusy] = useState(false)
@@ -75,7 +75,7 @@ export default function Kiosk() {
         if (data?.host == null && data?.port == null) return
         setDevice({
           host: data.host || '',
-          port: String(data.port || 17000),
+          port: String(data.port || 80),
           paired: Boolean(data.paired)
         })
       })
@@ -369,7 +369,7 @@ export default function Kiosk() {
                 </span>
               </div>
               <div style={{ color: '#475569', fontSize: '0.92em', marginBottom: '10px', lineHeight: 1.7 }}>
-                حالت دستگاه باید HTTP و پروتکل Asanpardakht CSV باشد. پورت را از تنظیمات PC-POS خود کارتخوان بردارید. در راهنمای شرکت نمونهٔ آن ۱۷۰۰۰ است، نه ۸۰.
+                حالت دستگاه باید HTTP و پروتکل Asanpardakht CSV باشد. آدرس همین دستگاه در پستمن http://192.168.100.25/api/v1 است، یعنی آی‌پی ۱۹۲.۱۶۸.۱۰۰.۲۵ و پورت ۸۰.
               </div>
               <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                 <input

@@ -362,6 +362,10 @@ function posPayload(result, extra = {}) {
     amount: extra.amount ?? null,
     rrn: result.rrn || null,
     stan: result.stan || null,
+    terminalId: result.terminalId || null,
+    merchantId: result.merchantId || null,
+    pan: result.pan || null,
+    dateTime: result.dateTime || null,
     transactionId: result.transactionId || extra.transactionId || null,
     shouldInquiry: Boolean(result.shouldInquiry),
     shouldRetry: Boolean(result.shouldRetry),
@@ -670,21 +674,25 @@ export async function payKioskWithPos(req, res, next) {
     if (!started.completion) {
       return res.json(posPayload(started.result, { amount, paid: false }));
     }
-    res.json(posPayload(started.result, { amount, paid: false }));
-    started.completion.then(async (result) => {
-      if (result.outcome !== 'success') return;
-      await recordCardPayment(pool, {
-        request,
-        userId: user.Id,
-        amount,
-        rrn: result.rrn,
-        stan: result.stan,
-        responseCode: result.responseCode
-      });
-    }).catch((error) => {
-      console.error('[kiosk-pos] purchase follow-up failed:', error);
-    });
-    return;
+    const result = await started.completion;
+    let paid = false;
+    if (result.outcome === 'success') {
+      try {
+        await recordCardPayment(pool, {
+          request,
+          userId: user.Id,
+          amount,
+          rrn: result.rrn,
+          stan: result.stan,
+          responseCode: result.responseCode
+        });
+        paid = true;
+      } catch (error) {
+        console.error('[kiosk-pos] card payment was approved but was not recorded:', error);
+      }
+    }
+    console.log(`[pcpos] kiosk result outcome=${result.outcome} code=${result.responseCode || '-'} rrn=${result.rrn || '-'}`);
+    return res.json(posPayload(result, { amount, paid }));
   } catch (error) {
     if (res.headersSent) {
       console.error('[kiosk-pos] purchase failed after response:', error);

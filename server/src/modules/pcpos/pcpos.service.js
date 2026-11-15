@@ -393,7 +393,7 @@ export async function startPurchase(input) {
       target: endpoint(config),
     };
     try {
-      console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount}`);
+      console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount} target=${endpoint(config)}`);
       const transport = await postFrame(requestFrame, config);
       const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
       logResult('purchase', messageId, result);
