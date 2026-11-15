@@ -18,6 +18,27 @@ function toFarsiDigits(value) {
   return String(value).replace(/\d/g, (d) => farsi[Number(d)])
 }
 
+function formatPosTime(value) {
+  const text = String(value || '')
+  if (!/^\d{14}$/.test(text)) return text
+  return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}`
+}
+
+function paymentResultLines(data) {
+  if (!data) return []
+  const pan = data.pan ? String(data.pan).replace(/D/gi, '*') : ''
+  const rows = [
+    ['کد پاسخ', data.responseCode],
+    ['مبلغ', data.amount ? `${formatAmount(Number(data.amount))} ریال` : ''],
+    ['شماره مرجع', data.rrn],
+    ['شماره پیگیری', data.stan],
+    ['پایانه', data.terminalId],
+    ['کارت', pan],
+    ['زمان', formatPosTime(data.dateTime)]
+  ]
+  return rows.filter(([, value]) => value)
+}
+
 function formatAmount(amount) {
   const n = Number(amount) || 0
   return toFarsiDigits(n.toLocaleString('en-US'))
@@ -159,13 +180,13 @@ export default function Kiosk() {
       setDevice((prev) => ({ ...prev, paired: false }))
     }
     if (data.outcome === 'success' || data.paid) {
-      const reference = data.rrn ? ` شماره مرجع: ${toFarsiDigits(data.rrn)}` : ''
       const successText = data.printFailed
         ? 'پرداخت انجام شد اما رسید چاپ نشد.'
         : (data.message || 'پرداخت با موفقیت انجام شد.')
       setBanner({
         tone: 'success',
-        text: `${successText}${reference}`
+        text: successText,
+        lines: paymentResultLines(data)
       })
       setPosStatus(null)
       try {
@@ -179,6 +200,7 @@ export default function Kiosk() {
       requestId: item.requestId,
       tone: data.outcome === 'unknown' || data.shouldInquiry ? 'warn' : 'error',
       text: data.message || 'نتیجهٔ پرداخت از کارتخوان مشخص نشد',
+      lines: paymentResultLines(data),
       transactionId: data.transactionId || null,
       shouldInquiry: Boolean(data.shouldInquiry),
       shouldRetry: data.shouldRetry !== false && data.outcome !== 'unknown'
@@ -526,6 +548,13 @@ export default function Kiosk() {
                     }}
                   >
                     {banner.text}
+                    {banner.lines?.length > 0 && (
+                      <div style={{ marginTop: '10px', fontWeight: 600, lineHeight: 1.9 }}>
+                        {banner.lines.map(([label, value]) => (
+                          <div key={label}>{label}: {toFarsiDigits(value)}</div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -591,6 +620,13 @@ export default function Kiosk() {
                                 }}
                               >
                                 {posStatus.text}
+                                {posStatus.lines?.length > 0 && (
+                                  <div style={{ marginTop: '8px', fontWeight: 600, lineHeight: 1.8 }}>
+                                    {posStatus.lines.map(([label, value]) => (
+                                      <div key={label}>{label}: {toFarsiDigits(value)}</div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             )}
                             {posStatus?.requestId === item.requestId && posStatus.shouldInquiry ? (

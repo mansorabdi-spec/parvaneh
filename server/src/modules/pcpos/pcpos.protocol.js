@@ -51,7 +51,7 @@ export function buildFrame(inner) {
 
 export function parseFrame(raw) {
   const text = String(raw ?? '').replace(/^\uFEFF/, '').trim();
-  const match = text.match(/^\$(.*)\*([0-9A-Fa-f]{2})$/);
+  const match = text.match(/^\$(.*)\*([0-9A-Fa-f]{2})\s*$/s);
   if (!match) {
     return {
       ok: false,
@@ -67,7 +67,7 @@ export function parseFrame(raw) {
   const inner = match[1];
   const receivedChecksum = match[2].toUpperCase();
   const expectedChecksum = checksum(inner);
-  const fields = inner.split(',');
+  const fields = inner.split(',').map((field) => field.trim());
   if (fields.length && fields[fields.length - 1] === '') fields.pop();
   return {
     ok: expectedChecksum === receivedChecksum,
@@ -377,7 +377,7 @@ export function displayedPaymentReady(timeline, now = Date.now(), limits = {}) {
   return false;
 }
 
-export function interpretPosResponse(parsed, { expectedType, expectedMessageId } = {}) {
+export function interpretPosResponse(parsed, { expectedType } = {}) {
   if (!parsed || parsed.malformed || !parsed.checksumValid) {
     return {
       outcome: 'unknown',
@@ -447,16 +447,5 @@ export function interpretPosResponse(parsed, { expectedType, expectedMessageId }
 
   const body = purchaseLikeBody(parsed.fields);
   const classified = classifyResponse(body.responseCode);
-  if (expectedMessageId && body.messageId && body.messageId !== String(expectedMessageId)) {
-    return {
-      ...body,
-      outcome: 'unknown',
-      checksumValid: true,
-      shouldInquiry: true,
-      shouldRetry: false,
-      printFailed: false,
-      message: 'شناسه پیام پاسخ با شناسه درخواست یکی نیست',
-    };
-  }
   return { ...body, ...classified, checksumValid: true };
 }

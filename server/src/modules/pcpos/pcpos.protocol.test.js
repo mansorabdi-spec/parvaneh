@@ -172,6 +172,21 @@ test('a purchase body is complete only when the checksum is at the end', () => {
   assert.equal(isCompletePosBody('{"type":"buy"'), false);
 });
 
+test('the live Postman buy response is an approved payment', () => {
+  const raw = '$POSBUY,000,000000003000,075806939059,010172,20261115131219,000000005647121,06555945,610433DDDDDD0990,11,*06\r\n';
+  const parsed = parseFrame(raw);
+  assert.equal(parsed.checksumValid, true);
+  const result = interpretPosResponse(parsed, { expectedType: 'POSBUY', expectedMessageId: '11' });
+  assert.equal(result.outcome, 'success');
+  assert.equal(result.responseCode, '000');
+  assert.equal(result.amount, '000000003000');
+  assert.equal(result.rrn, '075806939059');
+  assert.equal(result.stan, '010172');
+  assert.equal(result.terminalId, '06555945');
+  assert.equal(result.pan, '610433DDDDDD0990');
+  assert.equal(result.messageId, '11');
+});
+
 test('json buy response is a successful payment', () => {
   const raw = '{"type":"buy","response_code":"000","amount":"0000009295000","rrn":"123456789012","stan":"000123","date_time":"20261114162400","merchant_number":"4999182","terminal_id":"05832963","pan":"603799DDDDDD1234","message_id":"1"}';
   const result = interpretPosResponse(parsePosPayload(raw), { expectedType: 'POSBUY', expectedMessageId: '1' });

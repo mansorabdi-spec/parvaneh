@@ -113,7 +113,7 @@ export function postFrame(frame, config, options = {}) {
     'Accept-Encoding': 'identity',
   };
   if (payload) {
-    headers['Content-Type'] = 'text/plain; charset=utf-8';
+    headers['Content-Type'] = 'text/plain';
     headers['Content-Length'] = payload.length;
   } else {
     headers['Content-Length'] = 0;
@@ -320,12 +320,6 @@ function readStatus(transport) {
   return { kind: 'other', body: transport.body };
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-const PAID_WITHOUT_DEVICE_RESULT = 'پرداخت با موفقیت انجام شد';
-
 function logResult(kind, messageId, result) {
   console.log(`[pcpos] ${kind} messageId=${messageId} outcome=${result.outcome} code=${result.responseCode || '-'}`);
 }
@@ -400,67 +394,10 @@ export async function startPurchase(input) {
     };
     try {
       console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount}`);
-      const buyAbort = new AbortController();
-      const buyTask = postFrame(requestFrame, config, { signal: buyAbort.signal });
-      const first = await Promise.race([
-        buyTask.then((transport) => ({ source: 'body', transport })),
-        sleep(40000).then(() => ({ source: 'silent' })),
-      ]);
-      const transport = first.source === 'body' ? first.transport : null;
-      const deviceAnswered = Boolean(
-        transport
-        && !transport.transportError
-        && transport.httpStatus
-        && (transport.httpStatus !== 200 || String(transport.body || '').trim())
-      );
-      if (deviceAnswered) {
-        const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
-        logResult('purchase', messageId, result);
-        if (result.outcome !== 'unknown' && result.outcome !== 'pending') {
-          return publicResult(result, details);
-        }
-      }
-
-      await updateTransaction(transactionId, {
-        outcome: 'success',
-        errorMessage: null,
-        deviceAccepted: true,
-        responseCode: '000',
-      });
-      console.log(`[pcpos] purchase messageId=${messageId} outcome=success; the terminal did not send a result`);
-      buyAbort.abort();
-      buyTask.then(async (late) => {
-        if (!late || late.transportError || late.httpStatus !== 200) return;
-        const interpreted = interpretPosResponse(parsePosPayload(late.body), expect);
-        if (interpreted.outcome !== 'success') {
-          console.log(`[pcpos] late device code ${interpreted.responseCode || '-'} kept the paid result`);
-          return;
-        }
-        await updateTransaction(transactionId, {
-          outcome: 'success',
-          responseFrame: late.body,
-          responseCode: interpreted.responseCode || '000',
-          rrn: interpreted.rrn || null,
-          stan: interpreted.stan || null,
-          pan: interpreted.pan || null,
-          merchantId: interpreted.merchantId || null,
-          terminalId: interpreted.terminalId || null,
-          dateTime: interpreted.dateTime || null,
-          amount: interpreted.amount || null,
-          errorMessage: interpreted.printFailed ? interpreted.message : null,
-          deviceAccepted: true,
-        });
-      }).catch((error) => {
-        console.error('[pcpos] could not attach the late receipt result:', error.message);
-      });
-      return publicResult({
-        outcome: 'success',
-        printFailed: false,
-        shouldInquiry: false,
-        shouldRetry: false,
-        responseCode: '000',
-        message: PAID_WITHOUT_DEVICE_RESULT,
-      }, details);
+      const transport = await postFrame(requestFrame, config);
+      const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
+      logResult('purchase', messageId, result);
+      return publicResult(result, details);
     } catch (error) {
       const message = error.message || 'پرداخت روی کارتخوان ناتمام ماند';
       await updateTransaction(transactionId, { outcome: 'failed', errorMessage: message }).catch(() => {});
