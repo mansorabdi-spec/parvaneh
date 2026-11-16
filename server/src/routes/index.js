@@ -28,6 +28,7 @@ import plateServiceRouter from './plateService.js';
 import siteSettingsRouter from './modules/siteSettings.js';
 import kioskRouter from './modules/kiosk.js';
 import pcposRouter from '../modules/pcpos/pcpos.routes.js';
+import posBridgeRouter from '../modules/pcpos/pcpos.bridge.routes.js';
 
 const router = Router();
 
@@ -59,6 +60,7 @@ router.use('/license-history', licenseHistoryRouter);
 router.use('/plate-service', plateServiceRouter);
 router.use('/site-settings', siteSettingsRouter);
 router.use('/kiosk', kioskRouter);
+router.use('/pos-bridge', posBridgeRouter);
 router.use('/', pcposRouter);
 
 export default router;

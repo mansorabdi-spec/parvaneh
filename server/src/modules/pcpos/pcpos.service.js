@@ -433,6 +433,96 @@ export async function purchase(input) {
   return started.completion;
 }
 
+export async function sendPurchaseToDevice(input) {
+  const config = assertPcPosConfigured();
+  if (!config.token) return pairingRequired();
+
+  const messageId = input.messageId || allocateMessageId();
+  const dateTime = formatDateTime();
+  const hasSplits = Array.isArray(input.splits) && input.splits.length > 0;
+  let applicationId = null;
+  if (input.applicationId != null && String(input.applicationId).trim() !== '') {
+    applicationId = String(input.applicationId).trim();
+  } else if (input.applicationId == null && !hasSplits) {
+    applicationId = config.applicationId || null;
+  }
+  const requestFrame = buildPurchaseFrame({
+    amount: input.amount,
+    invoiceNumber: input.invoiceNumber,
+    dateTime,
+    messageId,
+    splits: input.splits || [],
+    applicationId,
+  });
+  const expect = { expectedType: 'POSBUY', expectedMessageId: messageId };
+  const details = {
+    messageId,
+    invoiceNumber: String(input.invoiceNumber),
+    dateTime,
+    requestFrame,
+    target: endpoint(config),
+  };
+
+  return withDevice(async () => {
+    console.log(`[pcpos] bridge purchase messageId=${messageId} amount=${input.amount} target=${endpoint(config)}`);
+    const transport = await postFrame(requestFrame, config);
+    if (transport.transportError) {
+      const unknown = transport.unknown && !transport.unreachable;
+      return {
+        outcome: unknown ? 'unknown' : 'failed',
+        checksumValid: false,
+        shouldInquiry: unknown,
+        shouldRetry: !unknown,
+        printFailed: false,
+        responseCode: '',
+        message: transport.message,
+        ...details,
+      };
+    }
+    const rejected = httpDecision(transport);
+    if (rejected) {
+      return {
+        ...rejected,
+        checksumValid: false,
+        printFailed: false,
+        responseCode: rejected.responseCode || '',
+        responseFrame: transport.body,
+        needsPairing: Boolean(rejected.needsPairing),
+        ...details,
+      };
+    }
+    const parsed = parsePosPayload(transport.body);
+    if (parsed.checksumValid && parsed.type === 'POSBSY') {
+      return {
+        outcome: 'failed',
+        checksumValid: false,
+        shouldInquiry: false,
+        shouldRetry: true,
+        printFailed: false,
+        responseCode: '',
+        responseFrame: transport.body,
+        message: 'کارتخوان مشغول است. صفحه اصلی دستگاه را باز کنید و دوباره تلاش کنید.',
+        ...details,
+      };
+    }
+    const interpreted = interpretPosResponse(parsed, expect);
+    return { ...interpreted, httpStatus: transport.httpStatus, responseFrame: transport.body, ...details };
+  }, input.requestId);
+}
+
+export async function readDeviceStatus() {
+  const config = getPcPosConfig();
+  if (!config.host || !config.token) return { kind: 'unauthorized', host: config.host || '', port: config.port };
+  const transport = await postFrame(buildStatusFrame(), config, { timeoutMs: 12000 });
+  const status = readStatus(transport);
+  return {
+    ...status,
+    host: config.host,
+    port: config.port,
+    body: transport.body || '',
+  };
+}
+
 export async function payBill(input) {
   const config = assertPcPosConfigured();
   if (!config.token) return pairingRequired();
@@ -567,6 +657,88 @@ export async function inquiry(input = {}) {
       target: endpoint(config),
       appliedTo: related?.Id ?? null,
     });
+  });
+}
+
+export async function applyDeviceStatus(input, status) {
+  const related = input.transactionId ? await getTransaction(input.transactionId) : null;
+  if (input.transactionId && !related) throw new PcPosError('تراکنش مورد نظر برای استعلام پیدا نشد', 404);
+  if (related && !['unknown', 'pending'].includes(related.Outcome)) {
+    throw new PcPosError('فقط تراکنش نامعلوم را استعلام کنید. این تراکنش نتیجه نهایی دارد', 409);
+  }
+  const messageId = allocateMessageId();
+  const requestFrame = buildStatusFrame();
+  const transactionId = await insertTransaction({
+    kind: 'inquiry',
+    messageId,
+    requestFrame,
+    outcome: 'pending',
+    relatedTransactionId: related?.Id ?? null,
+  });
+  const body = status?.body || '';
+  let result;
+  if (!status || status.kind === 'unauthorized') {
+    result = await applyDecision(transactionId, {
+      needsPairing: true,
+      outcome: 'failed',
+      shouldRetry: false,
+      shouldInquiry: false,
+      responseFrame: body,
+      message: 'کارتخوان این برنامه را نمی‌شناسد. دوباره کد جفت‌سازی را وارد کنید.',
+    });
+  } else if (status.kind === 'unreachable') {
+    result = await applyDecision(transactionId, {
+      outcome: 'failed',
+      shouldRetry: true,
+      shouldInquiry: false,
+      message: 'استعلام به کارتخوان نرسید.',
+    });
+  } else if (status.kind === 'state') {
+    const accepted = Boolean(related?.DeviceAccepted);
+    const live = status.live;
+    let outcome = 'status';
+    let shouldRetry = false;
+    let shouldInquiry = false;
+    let message = `وضعیت کارتخوان: ${stateMessage(status.state)}.`;
+    if (related && live) {
+      outcome = 'unknown';
+      shouldInquiry = true;
+      message = `خرید هنوز روی دستگاه باز است (${stateMessage(status.state)}). خرید را از نو نفرستید و بعد از تمام شدن کارت، دوباره استعلام بگیرید.`;
+    } else if (related && !live) {
+      outcome = 'failed';
+      shouldRetry = true;
+      message = accepted
+        ? 'کارتخوان آزاد است و این خرید روی آن باز نیست. اگر رسیدی چاپ نشده، دوباره پرداخت کنید.'
+        : 'کارتخوان خریدی در حال انجام ندارد. ارسال قبلی به دستگاه نرسیده و می‌توانید دوباره پرداخت کنید.';
+      await updateTransaction(related.Id, {
+        outcome: 'failed',
+        errorMessage: message,
+        resolvedByInquiry: true,
+      });
+    }
+    result = await applyDecision(transactionId, {
+      outcome: outcome === 'status' ? 'failed' : outcome,
+      shouldRetry,
+      shouldInquiry,
+      responseFrame: body,
+      message,
+    });
+    if (outcome === 'status') result.outcome = 'status';
+    result.state = status.state;
+  } else {
+    result = await applyDecision(transactionId, {
+      outcome: 'failed',
+      shouldRetry: true,
+      shouldInquiry: false,
+      responseFrame: body,
+      message: 'پاسخ وضعیت کارتخوان قابل استفاده نیست.',
+    });
+  }
+  return publicResult(result, {
+    transactionId,
+    messageId,
+    requestFrame,
+    appliedTo: related?.Id ?? null,
   });
 }
 

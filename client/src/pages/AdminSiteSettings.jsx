@@ -15,6 +15,9 @@ export default function AdminSiteSettings() {
   const [posHost, setPosHost] = useState('');
   const [posPort, setPosPort] = useState('80');
   const [posPaired, setPosPaired] = useState(false);
+  const [posBridge, setPosBridge] = useState(false);
+  const [posOnline, setPosOnline] = useState(true);
+  const [posSeen, setPosSeen] = useState(null);
   const [pairCode, setPairCode] = useState('');
   const [posBusy, setPosBusy] = useState(false);
   const [posNote, setPosNote] = useState('');
@@ -40,8 +43,11 @@ export default function AdminSiteSettings() {
     try {
       const { data: pos } = await api.get('/api/site-settings/pos');
       setPosHost(pos.host || '');
-      setPosPort(String(pos.port || 80));
+      setPosPort(pos.port ? String(pos.port) : '');
       setPosPaired(Boolean(pos.paired));
+      setPosBridge(Boolean(pos.bridge));
+      setPosOnline(pos.online !== false);
+      setPosSeen(pos.lastSeen || null);
     } catch (e) {
       setPosNote(e?.response?.data?.message || 'خواندن تنظیم دستگاه پوز انجام نشد');
     } finally {
@@ -392,11 +398,22 @@ export default function AdminSiteSettings() {
             </span>
           </h3>
           <p style={{ marginTop: 0, color: '#475569', lineHeight: 1.8, fontSize: '0.92rem' }}>
-            حالت دستگاه باید HTTP و پروتکل Asanpardakht CSV باشد. آی‌پی و پورت در فایل
-            {' '}<code>server/data/pcpos-session.json</code>{' '}
-            و توکن جفت‌سازی در فایل
-            {' '}<code>server/data/pcpos-token.json</code>{' '}
-            روی سرور ذخیره می‌شود. این مقدارها در جدول تنظیمات سایت نیست.
+            {posBridge
+              ? 'رایانه کیوسک بین سامانه و کارتخوان قرار دارد. آدرس و رمز جفت‌سازی روی همان رایانه می‌ماند. آن رایانه باید روشن باشد و با کارتخوان در یک شبکه باشد.'
+              : 'سامانه مستقیم به کارتخوان وصل می‌شود. آدرس و رمز جفت‌سازی روی سرور سامانه می‌ماند.'}
+          </p>
+          <p style={{ marginTop: 0, color: posBridge && !posOnline ? '#c2410c' : '#166534', lineHeight: 1.8, fontSize: '0.92rem' }}>
+            {posBridge
+              ? (posOnline ? 'اتصال رایانه کیوسک برقرار است.' : 'اتصال رایانه کیوسک قطع است.')
+              : 'ارسال مبلغ از خود سرور انجام می‌شود.'}
+          </p>
+          {posBridge && posSeen && (
+            <p style={{ marginTop: 0, color: '#475569', fontSize: '0.9rem' }}>
+              {`آخرین ارتباط: ${new Date(posSeen).toLocaleString('fa-IR')}`}
+            </p>
+          )}
+          <p dir="ltr" style={{ marginTop: 0, textAlign: 'left', color: '#64748b', fontSize: '0.85rem' }}>
+            Asanpardakht CSV
           </p>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <input

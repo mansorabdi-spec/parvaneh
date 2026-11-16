@@ -3,9 +3,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getPool, sql } from '../lib/db.js';
 import { initializeWorkflow } from './workflow.controller.js';
-import { getPcPosPublicSettings, savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
+import { savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
 import { confirmPairing, inquiry, paymentInProgress, releaseStalePurchase, startPairing, startPurchase } from '../modules/pcpos/pcpos.service.js';
-import { getLatestPurchaseByRequestId, getTransaction } from '../modules/pcpos/pcpos.store.js';
+import { getLatestPurchaseByRequestId, getTransaction, insertTransaction, updateTransaction } from '../modules/pcpos/pcpos.store.js';
+import {
+  bridgeModeEnabled,
+  enqueueJob,
+  findOpenPurchase,
+  getPosConnectionView,
+  runOnBridge,
+} from '../modules/pcpos/pcpos.bridge.js';
 
 const posLogFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/pcpos.log');
 
@@ -649,7 +656,8 @@ export async function payKioskWithPos(req, res) {
       }, { amount, paid: true }));
     }
     if (latest && (latest.Outcome === 'unknown' || latest.Outcome === 'pending')) {
-      if (paymentInProgress(request.RequestID)) {
+      const bridgeStillRunning = bridgeModeEnabled() && await findOpenPurchase(request.RequestID);
+      if (paymentInProgress(request.RequestID) || bridgeStillRunning) {
         return res.json({
           outcome: 'pending',
           transactionId: latest.Id,
@@ -680,6 +688,59 @@ export async function payKioskWithPos(req, res) {
           amount
         });
       }
+    }
+
+    if (bridgeModeEnabled()) {
+      const link = await getPosConnectionView();
+      if (!link.online) {
+        return res.json(posPayload({
+          outcome: 'failed',
+          message: 'رایانه کنار کارتخوان به سامانه وصل نیست. مبلغی ارسال نشده است.',
+          shouldInquiry: false,
+          shouldRetry: true,
+          responseCode: '',
+        }, { amount, paid: false }));
+      }
+      if (!link.paired) {
+        return res.json(posPayload({
+          outcome: 'failed',
+          needsPairing: true,
+          message: 'کارتخوان هنوز جفت نشده است. از تنظیمات سایت یک بار کد را وارد کنید. مبلغی ارسال نشده است.',
+          shouldInquiry: false,
+          shouldRetry: false,
+          responseCode: '',
+        }, { amount, paid: false }));
+      }
+      const transactionId = await insertTransaction({
+        kind: 'purchase',
+        messageId: '0',
+        invoiceNumber: invoiceNumberFor(request),
+        amount,
+        requestFrame: 'queued',
+        outcome: 'pending',
+        requestId: request.RequestID,
+      });
+      await updateTransaction(transactionId, {
+        outcome: 'pending',
+        errorMessage: 'در انتظار رایانه کنار کارتخوان',
+      });
+      await enqueueJob('purchase', {
+        transactionId,
+        amount,
+        invoiceNumber: invoiceNumberFor(request),
+        requestId: request.RequestID,
+        userId: user.Id,
+        vehicleId: request.VehicleID ?? null,
+        trackingNo: String(request.TrackingNo || ''),
+      }, request.RequestID);
+      return res.json(posPayload({
+        outcome: 'pending',
+        transactionId,
+        message: 'مبلغ برای کارتخوان فرستاده شد. کارت را بکشید و رمز را وارد کنید.',
+        shouldInquiry: false,
+        shouldRetry: false,
+        responseCode: '',
+      }, { amount, paid: false }));
     }
 
     const started = await startPurchase({
@@ -829,7 +890,12 @@ export async function inquiryKioskPos(req, res, next) {
       return res.status(404).json({ message: 'این تراکنش به پرونده شما تعلق ندارد' });
     }
 
-    const result = await inquiry({ transactionId });
+    const result = bridgeModeEnabled()
+      ? await runOnBridge('inquiry', { transactionId }, 20000, stored.RequestId)
+      : await inquiry({ transactionId });
+    if (result?.offline || result?.timedOut) {
+      return res.status(503).json({ message: result.message || 'استعلام به کارتخوان نرسید' });
+    }
     let paid = false;
     const amount = Math.round(Number(stored.Amount) || 0);
     if (result.outcome === 'success') {
@@ -853,30 +919,83 @@ export async function inquiryKioskPos(req, res, next) {
   }
 }
 
+export async function finalizeBridgePurchase(payload, result) {
+  const outcome = result?.outcome || 'failed';
+  await updateTransaction(payload.transactionId, {
+    outcome,
+    responseFrame: result?.responseFrame || null,
+    responseCode: result?.responseCode || null,
+    rrn: result?.rrn || null,
+    stan: result?.stan || null,
+    pan: result?.pan || null,
+    merchantId: result?.merchantId || null,
+    terminalId: result?.terminalId || null,
+    dateTime: result?.dateTime || null,
+    amount: result?.amount || payload.amount,
+    errorMessage: result?.printFailed
+      ? result.message
+      : (outcome === 'success' ? null : (result?.message || 'پرداخت انجام نشد')),
+    deviceAccepted: Boolean(result?.deviceAccepted) || outcome === 'success',
+  });
+  if (outcome === 'success') {
+    const pool = await getPool();
+    await recordCardPayment(pool, {
+      request: {
+        RequestID: payload.requestId,
+        VehicleID: payload.vehicleId ?? null,
+        TrackingNo: payload.trackingNo || '',
+      },
+      userId: payload.userId,
+      amount: Math.round(Number(payload.amount) || 0),
+      rrn: result?.rrn,
+      stan: result?.stan,
+      responseCode: result?.responseCode,
+    });
+  }
+  posLog(`[kiosk-pos] bridge result request=${payload.requestId} outcome=${outcome} code=${result?.responseCode || '-'}`);
+  return { ...result, outcome, transactionId: payload.transactionId };
+}
+
 export async function getKioskPosSettings(_req, res) {
-  res.json(getPcPosPublicSettings());
+  try {
+    res.json(await getPosConnectionView());
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'خواندن تنظیم کارتخوان ناموفق بود' });
+  }
 }
 
 export async function saveKioskPosSettings(req, res) {
   try {
+    if (bridgeModeEnabled()) {
+      const result = await runOnBridge('settings', {
+        host: req.body?.host,
+        port: req.body?.port,
+      }, 20000);
+      const status = result.ok ? 200 : 503;
+      return res.status(status).json(result);
+    }
     const saved = savePcPosSettings({
       host: req.body?.host,
       port: req.body?.port,
     });
     res.json({
       ...saved,
+      bridge: false,
+      online: true,
       message: saved.paired
         ? 'آدرس کارتخوان ذخیره شد. توکن جفت‌سازی سر جایش ماند.'
-        : 'آدرس کارتخوان ذخیره شد. یک‌بار کد جفت‌سازی را وارد کنید.',
+        : 'آدرس کارتخوان ذخیره شد. یک بار کد جفت‌سازی را وارد کنید.',
     });
   } catch (error) {
-    res.status(error.status || 400).json({ message: error.message || 'ذخیرهٔ آدرس کارتخوان ناموفق بود' });
+    res.status(error.status || 400).json({ message: error.message || 'ذخیره آدرس کارتخوان ناموفق بود' });
   }
 }
 
 export async function pairKioskPos(_req, res) {
   try {
-    const result = await startPairing();
+    const result = bridgeModeEnabled()
+      ? await runOnBridge('pair', {}, 20000)
+      : await startPairing();
     res.status(result.ok ? 200 : 409).json(result);
   } catch (error) {
     res.status(error.status || 500).json({ ok: false, message: error.message || 'جفت‌سازی شروع نشد' });
@@ -885,7 +1004,9 @@ export async function pairKioskPos(_req, res) {
 
 export async function confirmKioskPos(req, res) {
   try {
-    const result = await confirmPairing(req.body?.code);
+    const result = bridgeModeEnabled()
+      ? await runOnBridge('confirm', { code: req.body?.code }, 20000)
+      : await confirmPairing(req.body?.code);
     res.status(result.ok ? 200 : 400).json(result);
   } catch (error) {
     res.status(error.status || 500).json({ ok: false, message: error.message || 'تأیید جفت‌سازی ناموفق بود' });
