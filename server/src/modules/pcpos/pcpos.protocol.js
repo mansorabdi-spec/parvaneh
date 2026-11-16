@@ -261,11 +261,25 @@ export function buildPairConfirmFrame(code) {
   return buildFrame(`${text},`);
 }
 
-export function parsePairToken(raw) {
-  const parsed = parseFrame(raw);
-  const token = parsed.checksumValid ? String(parsed.fields[0] || '') : '';
+function normalizePairToken(value) {
+  const token = String(value || '').trim();
   if (!/^[0-9a-f]{64}$/i.test(token)) return '';
   return token.toLowerCase();
+}
+
+export function parsePairToken(raw) {
+  const text = String(raw ?? '').trim();
+  if (text.startsWith('{')) {
+    try {
+      const token = normalizePairToken(JSON.parse(text).token);
+      if (token) return token;
+    } catch {
+      // Fall through to the CSV frame.
+    }
+  }
+  const parsed = parseFrame(text);
+  const token = parsed.checksumValid ? String(parsed.fields[0] || '') : '';
+  return normalizePairToken(token);
 }
 
 export function buildBillFrame({ dateTime, messageId, billId, paymentId }) {

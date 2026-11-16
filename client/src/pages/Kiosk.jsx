@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 
 function isValidNationalCode(code) {
   if (!/^\d{10}$/.test(code)) return false
@@ -72,24 +72,6 @@ export default function Kiosk() {
   const [busyId, setBusyId] = useState(null)
   const [posStatus, setPosStatus] = useState(null)
   const [banner, setBanner] = useState(null)
-  const [device, setDevice] = useState({ host: '', port: '80', paired: false })
-  const [pairCode, setPairCode] = useState('')
-  const [deviceNote, setDeviceNote] = useState('')
-  const [deviceBusy, setDeviceBusy] = useState(false)
-
-  useEffect(() => {
-    fetch('/api/kiosk/pos/settings')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.host == null && data?.port == null) return
-        setDevice({
-          host: data.host || '',
-          port: String(data.port || 80),
-          paired: Boolean(data.paired)
-        })
-      })
-      .catch(() => {})
-  }, [])
 
   const loadUnpaid = async (code) => {
     const res = await fetch(`/api/kiosk/unpaid/${code}`)
@@ -132,62 +114,7 @@ export default function Kiosk() {
     }
   }
 
-  const saveDevice = async () => {
-    setDeviceNote('')
-    setDeviceBusy(true)
-    try {
-      const { ok, data } = await postPos('/api/kiosk/pos/settings', {
-        host: device.host.trim(),
-        port: Number(device.port)
-      })
-      setDevice((prev) => ({
-        ...prev,
-        host: data.host || prev.host,
-        port: String(data.port || prev.port),
-        paired: Boolean(data.paired)
-      }))
-      setDeviceNote(data.message || (ok ? 'آدرس ذخیره شد' : 'آدرس ذخیره نشد'))
-    } catch {
-      setDeviceNote('ذخیرهٔ آدرس کارتخوان انجام نشد')
-    } finally {
-      setDeviceBusy(false)
-    }
-  }
-
-  const requestPairCode = async () => {
-    setDeviceNote('')
-    setDeviceBusy(true)
-    try {
-      const { data } = await postPos('/api/kiosk/pos/pair', {})
-      setDeviceNote(data.message || 'کد روی کارتخوان را وارد کنید')
-    } catch {
-      setDeviceNote('ارتباط با کارتخوان برای گرفتن کد برقرار نشد')
-    } finally {
-      setDeviceBusy(false)
-    }
-  }
-
-  const confirmPairCode = async () => {
-    setDeviceNote('')
-    setDeviceBusy(true)
-    try {
-      const { ok, data } = await postPos('/api/kiosk/pos/pair/confirm', { code: pairCode })
-      if (ok && data.ok) {
-        setDevice((prev) => ({ ...prev, paired: true }))
-        setPairCode('')
-      }
-      setDeviceNote(data.message || 'جفت‌سازی انجام نشد')
-    } catch {
-      setDeviceNote('تأیید کد جفت‌سازی انجام نشد')
-    } finally {
-      setDeviceBusy(false)
-    }
-  }
-
   const applyPosResult = async (item, data) => {
-    if (data.needsPairing) {
-      setDevice((prev) => ({ ...prev, paired: false }))
-    }
     if (data.outcome === 'success' || data.paid) {
       const successText = data.printFailed
         ? 'پرداخت انجام شد اما رسید چاپ نشد.'
@@ -391,82 +318,6 @@ export default function Kiosk() {
           </div>
 
           <div style={{ padding: '28px 32px 32px' }}>
-            <div
-              style={{
-                marginBottom: '22px',
-                padding: '14px 16px',
-                border: '1px solid #dbeafe',
-                borderRadius: '12px',
-                background: '#f8fbff'
-              }}
-            >
-              <div style={{ fontWeight: 700, color: '#1e3a8a', marginBottom: '8px' }}>
-                دستگاه پوز
-                <span style={{ fontWeight: 600, color: device.paired ? '#047857' : '#c2410c', marginRight: '8px' }}>
-                  {device.paired ? 'جفت شده' : 'جفت نشده'}
-                </span>
-              </div>
-              <div style={{ color: '#475569', fontSize: '0.92em', marginBottom: '10px', lineHeight: 1.7 }}>
-                حالت دستگاه باید HTTP و پروتکل Asanpardakht CSV باشد. آدرس همین دستگاه در پستمن http://192.168.100.25/api/v1 است، یعنی آی‌پی ۱۹۲.۱۶۸.۱۰۰.۲۵ و پورت ۸۰.
-              </div>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                <input
-                  type="text"
-                  value={device.host}
-                  onChange={(e) => setDevice((prev) => ({ ...prev, host: e.target.value.trim() }))}
-                  placeholder="آی‌پی کارتخوان"
-                  style={{ flex: 1, padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1' }}
-                />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={device.port}
-                  onChange={(e) => setDevice((prev) => ({ ...prev, port: e.target.value.replace(/\D/g, '').slice(0, 5) }))}
-                  placeholder="پورت"
-                  style={{ width: '96px', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', textAlign: 'center' }}
-                />
-              </div>
-              <button
-                type="button"
-                disabled={deviceBusy}
-                onClick={saveDevice}
-                style={{ width: '100%', marginBottom: '8px', padding: '10px', border: 'none', borderRadius: '8px', background: '#1d4ed8', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
-              >
-                ذخیرهٔ آدرس
-              </button>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  disabled={deviceBusy}
-                  onClick={requestPairCode}
-                  style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '8px', background: '#0f766e', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  نمایش کد روی دستگاه
-                </button>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={pairCode}
-                  onChange={(e) => setPairCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  placeholder="کد ۶ رقمی"
-                  style={{ width: '120px', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', textAlign: 'center' }}
-                />
-                <button
-                  type="button"
-                  disabled={deviceBusy || pairCode.length !== 6}
-                  onClick={confirmPairCode}
-                  style={{ padding: '10px 12px', border: 'none', borderRadius: '8px', background: pairCode.length === 6 ? '#047857' : '#9ca3af', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  تأیید
-                </button>
-              </div>
-              {deviceNote && (
-                <div style={{ marginTop: '10px', color: '#1e293b', fontSize: '0.95em', lineHeight: 1.6 }}>
-                  {deviceNote}
-                </div>
-              )}
-            </div>
             {!result && (
               <form onSubmit={submit}>
                 <div style={{ marginBottom: '20px' }}>

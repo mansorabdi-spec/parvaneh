@@ -55,14 +55,16 @@ export function savePcPosSettings({ host, port }) {
     throw new PcPosError('پورت کارتخوان نامعتبر است');
   }
   const session = readSession();
-  const changed = session.host !== nextHost || Number(session.port) !== nextPort;
-  session.host = nextHost;
-  session.port = nextPort;
-  if (changed) {
-    delete session.token;
-    delete session.pairedAt;
+  const hostChanged = String(session.host || '') !== nextHost;
+  if (hostChanged) clearToken();
+  const stored = readSession();
+  stored.host = nextHost;
+  stored.port = nextPort;
+  if (hostChanged) {
+    delete stored.token;
+    delete stored.pairedAt;
   }
-  writeSession(session);
+  writeSession(stored);
   return getPcPosPublicSettings();
 }
 

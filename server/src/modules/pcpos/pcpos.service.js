@@ -1,5 +1,5 @@
 import http from 'http';
-import { assertPcPosConfigured, forgetPcPosToken, getPcPosConfig } from './pcpos.config.js';
+import { assertPcPosConfigured, getPcPosConfig } from './pcpos.config.js';
 import {
   PcPosError,
   buildBillFrame,
@@ -229,7 +229,6 @@ function httpDecision(transport) {
 }
 
 async function applyDecision(id, decision) {
-  if (decision.needsPairing) forgetPcPosToken();
   await updateTransaction(id, {
     outcome: decision.outcome,
     responseFrame: decision.responseFrame || null,
@@ -393,7 +392,7 @@ export async function startPurchase(input) {
       target: endpoint(config),
     };
     try {
-      console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount} target=${endpoint(config)}`);
+      console.log(`[pcpos] purchase sent messageId=${messageId} amount=${input.amount} target=${endpoint(config)} auth=${config.token ? 'yes' : 'no'}`);
       const transport = await postFrame(requestFrame, config);
       const result = await settle(transactionId, transport, expect, { deviceAccepted: !transport.unreachable });
       logResult('purchase', messageId, result);
@@ -599,8 +598,12 @@ export async function confirmPairing(code) {
   }
   const token = parsePairToken(transport.body);
   if (!token) return { ok: false, message: 'پاسخ جفت‌سازی قابل خواندن نیست.' };
-  saveToken(token);
-  return { ok: true, paired: true, message: 'کارتخوان جفت شد. حالا پرداخت را بزنید.' };
+  saveToken(token, config.host);
+  return {
+    ok: true,
+    paired: true,
+    message: 'کارتخوان جفت شد و توکن ذخیره شد. تا وقتی همین دستگاه باشد، لازم نیست دوباره جفت کنید.',
+  };
 }
 
 async function deviceHasLivePayment() {

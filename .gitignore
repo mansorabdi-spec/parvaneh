@@ -32,6 +32,7 @@ pnpm-debug.log*
 .env.*
 !.env.example
 server/data/pcpos-session.json
+server/data/pcpos-token.json
 
 # =========================
 # Cache

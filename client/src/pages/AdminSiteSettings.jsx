@@ -11,6 +11,14 @@ export default function AdminSiteSettings() {
   const [popupEnabled, setPopupEnabled] = useState(false);
   const [popupMessage, setPopupMessage] = useState('');
 
+  // POS device settings. Address and pairing token are files on the server, not SiteSettings rows.
+  const [posHost, setPosHost] = useState('');
+  const [posPort, setPosPort] = useState('80');
+  const [posPaired, setPosPaired] = useState(false);
+  const [pairCode, setPairCode] = useState('');
+  const [posBusy, setPosBusy] = useState(false);
+  const [posNote, setPosNote] = useState('');
+
   // Preview state
   const [showPreview, setShowPreview] = useState(false);
 
@@ -28,8 +36,65 @@ export default function AdminSiteSettings() {
       setPopupMessage(map['popup_message'] || '');
     } catch (e) {
       setError(e?.response?.data?.message || 'خطا در دریافت تنظیمات');
+    }
+    try {
+      const { data: pos } = await api.get('/api/site-settings/pos');
+      setPosHost(pos.host || '');
+      setPosPort(String(pos.port || 80));
+      setPosPaired(Boolean(pos.paired));
+    } catch (e) {
+      setPosNote(e?.response?.data?.message || 'خواندن تنظیم دستگاه پوز انجام نشد');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function savePosDevice() {
+    setPosBusy(true);
+    setPosNote('');
+    try {
+      const { data } = await api.put('/api/site-settings/pos', {
+        host: posHost.trim(),
+        port: Number(posPort),
+      });
+      setPosHost(data.host || posHost);
+      setPosPort(String(data.port || posPort));
+      setPosPaired(Boolean(data.paired));
+      setPosNote(data.message || 'آدرس کارتخوان ذخیره شد');
+    } catch (e) {
+      setPosNote(e?.response?.data?.message || 'ذخیرهٔ آدرس کارتخوان انجام نشد');
+    } finally {
+      setPosBusy(false);
+    }
+  }
+
+  async function requestPairCode() {
+    setPosBusy(true);
+    setPosNote('');
+    try {
+      const { data } = await api.post('/api/site-settings/pos/pair', {});
+      setPosNote(data.message || 'کد روی کارتخوان را وارد کنید');
+    } catch (e) {
+      setPosNote(e?.response?.data?.message || 'ارتباط با کارتخوان برای گرفتن کد برقرار نشد');
+    } finally {
+      setPosBusy(false);
+    }
+  }
+
+  async function confirmPairCode() {
+    setPosBusy(true);
+    setPosNote('');
+    try {
+      const { data } = await api.post('/api/site-settings/pos/pair/confirm', { code: pairCode });
+      if (data.ok) {
+        setPosPaired(true);
+        setPairCode('');
+      }
+      setPosNote(data.message || 'جفت‌سازی انجام نشد');
+    } catch (e) {
+      setPosNote(e?.response?.data?.message || 'تأیید کد جفت‌سازی انجام نشد');
+    } finally {
+      setPosBusy(false);
     }
   }
 
@@ -298,6 +363,105 @@ export default function AdminSiteSettings() {
             </button>
           </div>
         </form>
+
+        <div
+          className="card"
+          style={{
+            marginTop: 24,
+            padding: '24px 28px',
+            borderRadius: 10,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+            background: '#fff',
+          }}
+        >
+          <h3
+            style={{
+              marginTop: 0,
+              marginBottom: 12,
+              fontSize: '1.1rem',
+              fontWeight: 600,
+              color: '#1e3a5f',
+              borderBottom: '2px solid #e5e7eb',
+              paddingBottom: 12,
+            }}
+          >
+            دستگاه پوز
+            <span style={{ marginRight: 10, fontSize: '0.9rem', color: posPaired ? '#15803d' : '#c2410c' }}>
+              {posPaired ? 'جفت شده' : 'جفت نشده'}
+            </span>
+          </h3>
+          <p style={{ marginTop: 0, color: '#475569', lineHeight: 1.8, fontSize: '0.92rem' }}>
+            حالت دستگاه باید HTTP و پروتکل Asanpardakht CSV باشد. آی‌پی و پورت در فایل
+            {' '}<code>server/data/pcpos-session.json</code>{' '}
+            و توکن جفت‌سازی در فایل
+            {' '}<code>server/data/pcpos-token.json</code>{' '}
+            روی سرور ذخیره می‌شود. این مقدارها در جدول تنظیمات سایت نیست.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input
+              type="text"
+              value={posHost}
+              onChange={(e) => setPosHost(e.target.value.trim())}
+              placeholder="آی‌پی کارتخوان"
+              style={{ flex: 1, padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db' }}
+            />
+            <input
+              type="text"
+              inputMode="numeric"
+              value={posPort}
+              onChange={(e) => setPosPort(e.target.value.replace(/\D/g, '').slice(0, 5))}
+              placeholder="پورت"
+              style={{ width: 96, padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', textAlign: 'center' }}
+            />
+          </div>
+          <button
+            type="button"
+            disabled={posBusy}
+            onClick={savePosDevice}
+            className="btn btn-green"
+            style={{ width: '100%', marginBottom: 8, padding: '10px', fontWeight: 700 }}
+          >
+            ذخیرهٔ آدرس
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={posBusy}
+              onClick={requestPairCode}
+              style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#0f766e', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+            >
+              نمایش کد روی دستگاه
+            </button>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={pairCode}
+              onChange={(e) => setPairCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="کد ۶ رقمی"
+              style={{ width: 120, padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', textAlign: 'center' }}
+            />
+            <button
+              type="button"
+              disabled={posBusy || pairCode.length !== 6}
+              onClick={confirmPairCode}
+              style={{
+                padding: '10px 12px',
+                border: 'none',
+                borderRadius: 8,
+                background: pairCode.length === 6 ? '#047857' : '#9ca3af',
+                color: '#fff',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              تأیید
+            </button>
+          </div>
+          {posNote && (
+            <div style={{ marginTop: 10, color: '#1e293b', lineHeight: 1.7 }}>{posNote}</div>
+          )}
+        </div>
       )}
 
       {/* Popup Preview Modal */}

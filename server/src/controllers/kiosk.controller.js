@@ -865,7 +865,9 @@ export async function saveKioskPosSettings(req, res) {
     });
     res.json({
       ...saved,
-      message: 'آدرس کارتخوان ذخیره شد. اگر دستگاه عوض شده، یک‌بار دیگر کد جفت‌سازی را وارد کنید.',
+      message: saved.paired
+        ? 'آدرس کارتخوان ذخیره شد. توکن جفت‌سازی سر جایش ماند.'
+        : 'آدرس کارتخوان ذخیره شد. یک‌بار کد جفت‌سازی را وارد کنید.',
     });
   } catch (error) {
     res.status(error.status || 400).json({ message: error.message || 'ذخیرهٔ آدرس کارتخوان ناموفق بود' });

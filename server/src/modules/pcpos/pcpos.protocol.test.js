@@ -126,6 +126,7 @@ test('pairing confirm frame and token response', () => {
   const token = 'a'.repeat(64);
   const body = buildFrame(`${token},`);
   assert.equal(parsePairToken(body), token);
+  assert.equal(parsePairToken(JSON.stringify({ token: token.toUpperCase() })), token);
 });
 
 test('masked PAN does not steal the checksum asterisk', () => {
