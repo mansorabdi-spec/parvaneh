@@ -130,6 +130,7 @@ export default function AdminSiteSettings() {
       {loading ? (
         <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>در حال بارگذاری...</div>
       ) : (
+        <>
         <form onSubmit={handleSave}>
           {/* Popup Settings Card */}
           <div
@@ -462,6 +463,7 @@ export default function AdminSiteSettings() {
             <div style={{ marginTop: 10, color: '#1e293b', lineHeight: 1.7 }}>{posNote}</div>
           )}
         </div>
+        </>
       )}
 
       {/* Popup Preview Modal */}

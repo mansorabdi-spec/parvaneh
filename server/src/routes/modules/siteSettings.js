@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { authRequired, requireRole } from '../../middleware/auth.js';
-import { excludeRole } from '../../middleware/roleExempt.js';
+import { authRequired } from '../../middleware/auth.js';
+import { requirePageAccess } from '../../middleware/pageAccess.js';
 import { getPopupSettings, getAllSettings, updatePopupSettings } from '../../controllers/siteSettings.controller.js';
 import {
   confirmKioskPos,
@@ -10,12 +10,12 @@ import {
 } from '../../controllers/kiosk.controller.js';
 
 const router = Router();
-const adminOnly = [authRequired, requireRole('Admin'), excludeRole('superadmin')];
+const adminOnly = [authRequired, requirePageAccess('admin_site_settings')];
 
 // Public endpoint - anyone can get popup settings (to show on site load)
 router.get('/popup', getPopupSettings);
 
-// Admin-only endpoints (restricted for SuperAdmin)
+// Same roles that can open the data-management menu
 router.get('/', ...adminOnly, getAllSettings);
 router.put('/popup', ...adminOnly, updatePopupSettings);
 router.get('/pos', ...adminOnly, getKioskPosSettings);

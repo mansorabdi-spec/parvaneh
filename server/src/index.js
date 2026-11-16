@@ -9,6 +9,7 @@ import apiRouter from './routes/index.js';
 import { ensureRenewalWindowLookup } from './controllers/lookups.controller.js';
 import { ensureComprehensiveReportPage } from './lib/comprehensiveReport.js';
 import { ensureApplicantLicensePages } from './lib/ensureApplicantLicensePages.js';
+import { ensureSiteSettingsPage } from './lib/ensureSiteSettingsPage.js';
 import { renameDeputyAdminRole } from './lib/renameSuperadminRole.js';
 import { dbErrorHandler } from './middleware/dbErrorHandler.js';
 
@@ -115,6 +116,12 @@ const server = app.listen(port, async () => {
       await ensureApplicantLicensePages(pool);
     } catch (licensePageError) {
       console.error('✗ Failed to ensure applicant renew/change pages:', licensePageError.message);
+    }
+    try {
+      const pool = await getPool();
+      await ensureSiteSettingsPage(pool);
+    } catch (siteSettingsPageError) {
+      console.error('✗ Failed to ensure site settings page:', siteSettingsPageError.message);
     }
     const env = process.env.NODE_ENV || 'development';
     console.log(`✓ Server is running on port ${port}`);

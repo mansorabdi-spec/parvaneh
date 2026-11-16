@@ -361,7 +361,7 @@ function AppShell({ token, user, companyName, theme, toggleTheme, onLoggedIn, on
             <Route path="/print-license/:requestId" element={<ProtectedRoute pageKey="print_license" element={<PrintLicense />} />} />
             <Route path="/print-legal-entity-license/:requestId" element={<ProtectedRoute pageKey="print_license" element={<PrintLegalEntityLicense />} />} />
             <Route path="/verify-license/:trackingNo" element={<VerifyLicense />} />
-            <Route path="/admin/site-settings" element={<ProtectedRoute element={<AdminSiteSettings />} />} />
+            <Route path="/admin/site-settings" element={<ProtectedRoute pageKey="admin_site_settings" element={<AdminSiteSettings />} />} />
             {/* Tariff Test Page (Development) */}
             <Route path="/tariff-test" element={<TariffTest />} />
             <Route path="/Kiosk" element={<Kiosk />} />

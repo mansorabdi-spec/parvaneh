@@ -62,7 +62,7 @@ export default function DynamicNav({ token }) {
   const hasAdminProvincesAccess = token && hasAccess('admin_provinces');
   const hasAdminTariffsAccess = token && hasAccess('admin_tariffs');
   const hasManageCompaniesAccess = token && hasAccess('admin_manage_companies');
-  const hasSiteSettingsAccess = token && hasAccess('admin_site_settings') && !isSuperAdminOnly;
+  const hasSiteSettingsAccess = token && hasAccess('admin_site_settings');
   const hasApprovalsFlowAccess = token && hasAccess('admin_approvals_flow') && !isSuperAdminOnly;
 
   const hasAnyAdminDataPages = token && (
