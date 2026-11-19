@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "bridge": "node src/pos-bridge.js",
+    "bridge": "node ../kiosk-bridge/src/main.js",
     "lint": "echo 'no linter configured'"
   },
   "dependencies": {

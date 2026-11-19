@@ -77,5 +77,6 @@ Thumbs.db
 # =========================
 tmp/
 temp/
+kiosk-bridge/data/
 *.tmp
 *.bak

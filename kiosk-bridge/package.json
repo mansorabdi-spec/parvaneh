@@ -1,0 +1,5 @@
+{
+  "name": "kiosk-bridge",
+  "private": true,
+  "type": "module"
+}
