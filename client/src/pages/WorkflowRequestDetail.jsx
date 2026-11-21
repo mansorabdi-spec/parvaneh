@@ -1191,6 +1191,7 @@ export default function WorkflowRequestDetail() {
                           <tr style={{ background: '#f3f4f6' }}>
                             <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>مبلغ</th>
                             <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>وضعیت</th>
+                            <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>روش پرداخت</th>
                             <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>کد پیگیری درگاه</th>
                             <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>تاریخ ایجاد</th>
                             <th style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>تاریخ پرداخت</th>
@@ -1204,6 +1205,11 @@ export default function WorkflowRequestDetail() {
                               </td>
                               <td style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>
                                 {getStatusBadge(p.Status)}
+                              </td>
+                              <td style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>
+                                {p.PaymentChannel === 'Pos'
+                                  ? ((p.ViaKiosk === true || p.ViaKiosk === 1) ? 'دستگاه پوز از کیوسک' : 'دستگاه پوز')
+                                  : ((p.ViaKiosk === true || p.ViaKiosk === 1) ? 'کیوسک' : 'اینترنتی')}
                               </td>
                               <td style={{ border: '1px solid #d1d5db', padding: '10px', textAlign: 'center' }}>
                                 {p.GatewayRef || '-'}

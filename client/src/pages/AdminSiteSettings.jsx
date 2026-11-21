@@ -21,6 +21,10 @@ export default function AdminSiteSettings() {
   const [pairCode, setPairCode] = useState('');
   const [posBusy, setPosBusy] = useState(false);
   const [posNote, setPosNote] = useState('');
+  const [bridgeKeyReady, setBridgeKeyReady] = useState(false);
+  const [kioskSite, setKioskSite] = useState(() => (typeof window === 'undefined' ? '' : window.location.origin));
+  const [packageBusy, setPackageBusy] = useState(false);
+  const [packageNote, setPackageNote] = useState('');
 
   // Preview state
   const [showPreview, setShowPreview] = useState(false);
@@ -48,6 +52,7 @@ export default function AdminSiteSettings() {
       setPosBridge(Boolean(pos.bridge));
       setPosOnline(pos.online !== false);
       setPosSeen(pos.lastSeen || null);
+      setBridgeKeyReady(Boolean(pos.bridgeKeyReady));
     } catch (e) {
       setPosNote(e?.response?.data?.message || 'خواندن تنظیم دستگاه پوز انجام نشد');
     } finally {
@@ -84,6 +89,43 @@ export default function AdminSiteSettings() {
       setPosNote(e?.response?.data?.message || 'ارتباط با کارتخوان برای گرفتن کد برقرار نشد');
     } finally {
       setPosBusy(false);
+    }
+  }
+
+  async function downloadKioskPackage() {
+    setPackageBusy(true);
+    setPackageNote('');
+    try {
+      const response = await api.get('/api/site-settings/pos/kiosk-package', {
+        params: { site: kioskSite.trim() },
+        responseType: 'blob',
+      });
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'kiosk-bridge.zip';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setPackageNote('فایل‌ها دانلود شد. پوشه را به رایانه کیوسک ببرید و گام‌های زیر را همان‌جا انجام دهید.');
+    } catch (e) {
+      let message = 'دانلود فایل‌های کیوسک انجام نشد';
+      const data = e?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          if (parsed.message) message = parsed.message;
+        } catch {
+          // The error body was not JSON.
+        }
+      } else if (data?.message) {
+        message = data.message;
+      }
+      setPackageNote(message);
+    } finally {
+      setPackageBusy(false);
     }
   }
 
@@ -479,6 +521,86 @@ export default function AdminSiteSettings() {
           {posNote && (
             <div style={{ marginTop: 10, color: '#1e293b', lineHeight: 1.7 }}>{posNote}</div>
           )}
+
+          <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid #e5e7eb' }}>
+            <h4 style={{ margin: '0 0 8px', color: '#1e3a5f', fontSize: '1rem' }}>فایل‌های رایانه کیوسک</h4>
+            <p style={{ marginTop: 0, color: '#475569', lineHeight: 1.9, fontSize: '0.92rem' }}>
+              برنامه اتصال کارتخوان روی رایانه کنار دستگاه پوز اجرا می‌شود. این رایانه مبلغ را از سامانه می‌گیرد و به کارتخوان همان شبکه می‌فرستد. فایل‌های لازم را از اینجا دانلود کنید و روی آن رایانه کپی کنید.
+            </p>
+            {!posBridge && (
+              <p style={{ marginTop: 0, color: '#c2410c', lineHeight: 1.9, fontSize: '0.92rem' }}>
+                روی سرور مقدار <bdi>PCPOS_USE_BRIDGE</bdi> باید ۱ باشد تا سامانه کار پرداخت را به رایانه کیوسک بسپارد.
+              </p>
+            )}
+            {!bridgeKeyReady && (
+              <p style={{ marginTop: 0, color: '#c2410c', lineHeight: 1.9, fontSize: '0.92rem' }}>
+                کلید مشترک روی سرور تنظیم نشده است. در تنظیم سرور مقدار <bdi>PCPOS_BRIDGE_KEY</bdi> را یک عبارت حداقل ۸ نویسه‌ای بگذارید و سرور را دوباره راه بیندازید. همان کلید داخل فایل دانلود قرار می‌گیرد و در این صفحه نشان داده نمی‌شود.
+              </p>
+            )}
+            <label style={{ display: 'block', marginBottom: 6, color: '#334155', fontSize: '0.9rem' }}>
+              آدرس عمومی سایت که داخل فایل تنظیم کیوسک نوشته می‌شود
+            </label>
+            <input
+              type="url"
+              dir="ltr"
+              value={kioskSite}
+              onChange={(e) => setKioskSite(e.target.value.trim())}
+              placeholder="https://example.com"
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', marginBottom: 8, boxSizing: 'border-box' }}
+            />
+            {/localhost|127\.0\.0\.1|:4000\b|:4001\b|:5173\b/i.test(kioskSite) && (
+              <p style={{ marginTop: 0, color: '#c2410c', lineHeight: 1.8, fontSize: '0.88rem' }}>
+                این آدرس مخصوص رایانه فعلی یا درگاه داخلی سرور است. پیش از دانلود، آدرس عمومی سایت را بنویسید و شماره درگاه ۴۰۰۰ یا ۴۰۰۱ را در آن نگذارید.
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={packageBusy}
+              onClick={downloadKioskPackage}
+              style={{
+                width: '100%',
+                marginBottom: 14,
+                padding: '10px',
+                border: 'none',
+                borderRadius: 8,
+                background: packageBusy ? '#9ca3af' : '#1d4ed8',
+                color: '#fff',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              {packageBusy ? 'در حال ساخت فایل...' : 'دانلود فایل‌های رایانه کیوسک'}
+            </button>
+            {packageNote && (
+              <div style={{ marginBottom: 12, color: '#1e293b', lineHeight: 1.7 }}>{packageNote}</div>
+            )}
+            <p style={{ margin: '0 0 8px', color: '#1e3a5f', fontWeight: 700, fontSize: '0.95rem' }}>
+              کارهایی که روی رایانه کیوسک انجام می‌شود
+            </p>
+            <ol style={{ margin: 0, paddingRight: 20, color: '#334155', lineHeight: 1.95, fontSize: '0.92rem' }}>
+              <li>
+                برنامه <bdi>Node.js</bdi> نسخه ۱۸ یا جدیدتر را نصب کنید و هنگام نصب، افزودن آن به <bdi>PATH</bdi> را انتخاب کنید.
+              </li>
+              <li>
+                فایل دانلودشده را به رایانه کیوسک ببرید و در یک پوشه ثابت، مانند <bdi>C:\kiosk-bridge</bdi>، از حالت فشرده خارج کنید.
+              </li>
+              <li>
+                فایل <bdi>.env</bdi> را باز کنید. مقدار <bdi>PCPOS_SERVER_URL</bdi> باید همان آدرس عمومی سایت باشد. مقدار <bdi>PCPOS_BRIDGE_KEY</bdi> را تغییر ندهید.
+              </li>
+              <li>رایانه کیوسک و دستگاه پوز را به یک شبکه مشترک وصل کنید.</li>
+              <li>
+                فایل <bdi>start.bat</bdi> را اجرا کنید و پنجره را نبندید. پیام «سامانه پاسخ داد» یعنی اتصال با سامانه برقرار شده است.
+              </li>
+              <li>
+                برای بالا آمدن همراه با روشن شدن رایانه، میانبر <bdi>start.bat</bdi> را در پوشه <bdi>Startup</bdi> ویندوز بگذارید.
+              </li>
+              <li>
+                به همین صفحه برگردید. پس از جمله «اتصال رایانه کیوسک برقرار است»، آی‌پی و پورت کارتخوان را ذخیره کنید. پورت سرویس پوز آسان‌پرداخت معمولاً ۱۷۰۰۰ است.
+              </li>
+              <li>دکمه «نمایش کد روی دستگاه» را بزنید، کد شش‌رقمی روی کارتخوان را وارد کنید و تأیید را بزنید.</li>
+              <li>در مرورگر همان رایانه، صفحه کیوسک سایت را باز کنید و یک پرداخت آزمایشی انجام دهید.</li>
+            </ol>
+          </div>
         </div>
         </>
       )}

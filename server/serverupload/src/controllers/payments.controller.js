@@ -1,6 +1,7 @@
 import Joi from 'joi';
 import axios from 'axios';
 import { getPool, sql } from '../lib/db.js';
+import { ensureOnlinePaymentChannel } from '../lib/ensureOnlinePaymentChannel.js';
 import { initializeWorkflow } from './workflow.controller.js';
 
 const createSchema = Joi.object({
@@ -20,6 +21,7 @@ export async function createOnlinePayment(req, res, next) {
 
     const userId = req.user?.id || null;
     const pool = await getPool();
+    await ensureOnlinePaymentChannel(pool);
     
     // Get RequestID from TrackingNo if not provided
     let requestId = value.requestId || null;
@@ -41,9 +43,11 @@ export async function createOnlinePayment(req, res, next) {
       .input('Description', sql.NVarChar(sql.MAX), value.description || null)
       .input('RequestID', sql.BigInt, requestId)
       .input('GatewayAuthority', sql.NVarChar(100), value.orderId || null)
-      .query(`INSERT INTO OnlinePayment(VehicleID, TrackingNo, Amount, CalculatedAmount, UserId, PayedBit, Description, Status, RequestID, GatewayAuthority)
+      .input('PaymentChannel', sql.NVarChar(20), 'Internet')
+      .input('ViaKiosk', sql.Bit, 0)
+      .query(`INSERT INTO OnlinePayment(VehicleID, TrackingNo, Amount, CalculatedAmount, UserId, PayedBit, Description, Status, RequestID, GatewayAuthority, PaymentChannel, ViaKiosk)
               OUTPUT INSERTED.*
-              VALUES(@VehicleID, @TrackingNo, @Amount, @CalculatedAmount, @UserId, 0, @Description, 'Initiated', @RequestID, @GatewayAuthority)`);
+              VALUES(@VehicleID, @TrackingNo, @Amount, @CalculatedAmount, @UserId, 0, @Description, 'Initiated', @RequestID, @GatewayAuthority, @PaymentChannel, @ViaKiosk)`);
     res.status(201).json(r.recordset[0]);
   } catch (e) { next(e); }
 }
@@ -282,10 +286,12 @@ export async function listOnlinePayments(req, res, next) {
     if (!requestId) return res.status(400).json({ message: 'requestId is required' });
     
     const pool = await getPool();
+    await ensureOnlinePaymentChannel(pool);
     const r = await pool.request()
       .input('RequestID', sql.BigInt, requestId)
       .query(`SELECT Id, VehicleID, TrackingNo, Amount, UserId, PayedBit, Description, 
-                     Status, GatewayRef, GatewayAuthority, CreatedAt, PaidAt, RequestID
+                     Status, GatewayRef, GatewayAuthority, CreatedAt, PaidAt, RequestID,
+                     PaymentChannel, ViaKiosk
               FROM OnlinePayment
               WHERE RequestID=@RequestID
               ORDER BY CreatedAt DESC, Id DESC`);
@@ -399,6 +405,7 @@ export async function getPaymentsByRequestId(req, res, next) {
     }
 
     const pool = await getPool();
+    await ensureOnlinePaymentChannel(pool);
     
     // Get online payments
     const onlineResult = await pool.request()
@@ -410,7 +417,9 @@ export async function getPaymentsByRequestId(req, res, next) {
           GatewayAuthority AS ReferenceNo,
           CONVERT(VARCHAR, PaidAt, 23) AS PaymentDate,
           Status,
-          Description
+          Description,
+          PaymentChannel,
+          ViaKiosk
         FROM OnlinePayment
         WHERE RequestID = @RequestID AND PayedBit = 1
         ORDER BY PaidAt DESC

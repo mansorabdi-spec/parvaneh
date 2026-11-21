@@ -96,9 +96,19 @@ export async function bridgeIsOnline() {
   return Date.now() - new Date(row.LastSeen).getTime() < ONLINE_MS;
 }
 
+function bridgeKeyReady() {
+  return String(process.env.PCPOS_BRIDGE_KEY || '').trim().length >= 8;
+}
+
 export async function getPosConnectionView() {
   if (!bridgeModeEnabled()) {
-    return { ...getPcPosPublicSettings(), bridge: false, online: true, lastSeen: null };
+    return {
+      ...getPcPosPublicSettings(),
+      bridge: false,
+      online: true,
+      lastSeen: null,
+      bridgeKeyReady: bridgeKeyReady(),
+    };
   }
   const row = await readStatusRow();
   const online = Boolean(row?.LastSeen) && Date.now() - new Date(row.LastSeen).getTime() < ONLINE_MS;
@@ -109,6 +119,7 @@ export async function getPosConnectionView() {
     bridge: true,
     online,
     lastSeen: row?.LastSeen || null,
+    bridgeKeyReady: bridgeKeyReady(),
   };
 }
 

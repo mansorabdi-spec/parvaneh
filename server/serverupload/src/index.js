@@ -10,6 +10,7 @@ import { ensureRenewalWindowLookup } from './controllers/lookups.controller.js';
 import { ensureComprehensiveReportPage } from './lib/comprehensiveReport.js';
 import { ensureApplicantLicensePages } from './lib/ensureApplicantLicensePages.js';
 import { ensureSiteSettingsPage } from './lib/ensureSiteSettingsPage.js';
+import { ensureOnlinePaymentChannel } from './lib/ensureOnlinePaymentChannel.js';
 import { renameDeputyAdminRole } from './lib/renameSuperadminRole.js';
 import { dbErrorHandler } from './middleware/dbErrorHandler.js';
 
@@ -122,6 +123,12 @@ const server = app.listen(port, async () => {
       await ensureSiteSettingsPage(pool);
     } catch (siteSettingsPageError) {
       console.error('✗ Failed to ensure site settings page:', siteSettingsPageError.message);
+    }
+    try {
+      const pool = await getPool();
+      await ensureOnlinePaymentChannel(pool);
+    } catch (paymentChannelError) {
+      console.error('✗ Failed to ensure online payment channel:', paymentChannelError.message);
     }
     const env = process.env.NODE_ENV || 'development';
     console.log(`✓ Server is running on port ${port}`);

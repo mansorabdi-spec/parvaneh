@@ -2160,6 +2160,11 @@ const renderStep2UploadDocuments = () => (
                                   <strong>شماره پیگیری:</strong> {payment.ReferenceNo || '-'}
                                 </p>
                                 <p style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
+                                  <strong>روش پرداخت:</strong> {payment.PaymentChannel === 'Pos'
+                                    ? ((payment.ViaKiosk === true || payment.ViaKiosk === 1) ? 'دستگاه پوز از کیوسک' : 'دستگاه پوز')
+                                    : ((payment.ViaKiosk === true || payment.ViaKiosk === 1) ? 'کیوسک' : 'اینترنتی')}
+                                </p>
+                                <p style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
                                   <strong>مبلغ:</strong> {(payment.Amount || 0).toLocaleString('fa-IR')} ریال
                                 </p>
                                 <p style={{ margin: '0', fontSize: '13px', color: '#64748b' }}>

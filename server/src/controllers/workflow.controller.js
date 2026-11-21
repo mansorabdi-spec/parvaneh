@@ -1,5 +1,6 @@
 import Joi from 'joi';
 import { getPool, sql } from '../lib/db.js';
+import { ensureOnlinePaymentChannel } from '../lib/ensureOnlinePaymentChannel.js';
 import { logLicenseHistory, calculateExpiryDate } from '../utils/licenseHistoryLogger.js';
 import { logLicenseRenewal } from '../utils/licenseRenewalLogger.js';
 import { getCurrentShamsiDate, addOneYearShamsi, shamsiToGregorian, gregorianToShamsi } from '../utils/shamsiDateUtils.js';
@@ -951,13 +952,14 @@ export async function getRequestDetail(req, res, next) {
     // Payments - get both online and offline payments for this request
     if (permissions['view_payments']?.canView || isOwner || isApproved) {
       // Online payments
+      await ensureOnlinePaymentChannel(pool);
       const onlinePaymentsResult = await pool.request()
         .input('RequestID', sql.BigInt, requestId)
         .query(`
           SELECT 
             Id, VehicleID, TrackingNo, Amount, UserId, PayedBit, 
             Description, Status, GatewayRef, GatewayAuthority, 
-            CreatedAt, PaidAt, RequestID,
+            CreatedAt, PaidAt, RequestID, PaymentChannel, ViaKiosk,
             'Online' AS PaymentType
           FROM OnlinePayment
           WHERE RequestID = @RequestID

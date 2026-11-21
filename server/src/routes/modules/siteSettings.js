@@ -8,6 +8,7 @@ import {
   pairKioskPos,
   saveKioskPosSettings,
 } from '../../controllers/kiosk.controller.js';
+import { sendKioskPackage } from '../../modules/pcpos/kioskPackage.js';
 
 const router = Router();
 const adminOnly = [authRequired, requirePageAccess('admin_site_settings')];
@@ -19,6 +20,7 @@ router.get('/popup', getPopupSettings);
 router.get('/', ...adminOnly, getAllSettings);
 router.put('/popup', ...adminOnly, updatePopupSettings);
 router.get('/pos', ...adminOnly, getKioskPosSettings);
+router.get('/pos/kiosk-package', ...adminOnly, sendKioskPackage);
 router.put('/pos', ...adminOnly, saveKioskPosSettings);
 router.post('/pos/pair', ...adminOnly, pairKioskPos);
 router.post('/pos/pair/confirm', ...adminOnly, confirmKioskPos);

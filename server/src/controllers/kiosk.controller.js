@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getPool, sql } from '../lib/db.js';
+import { ensureOnlinePaymentChannel } from '../lib/ensureOnlinePaymentChannel.js';
 import { initializeWorkflow } from './workflow.controller.js';
 import { savePcPosSettings } from '../modules/pcpos/pcpos.config.js';
 import { confirmPairing, inquiry, paymentInProgress, releaseStalePurchase, startPairing, startPurchase } from '../modules/pcpos/pcpos.service.js';
@@ -576,6 +577,7 @@ async function recordCardPayment(pool, { request, userId, amount, rrn, stan, res
         (SELECT TOP 1 Id FROM OfflinePayment WHERE RequestID = @RequestID) AS OfflineId
     `);
   if (!existing.recordset[0]?.OnlineId && !existing.recordset[0]?.OfflineId) {
+    await ensureOnlinePaymentChannel(pool);
     await pool.request()
       .input('VehicleID', sql.BigInt, request.VehicleID ?? null)
       .input('TrackingNo', sql.NVarChar(30), String(request.TrackingNo || '').slice(0, 30))
@@ -586,14 +588,17 @@ async function recordCardPayment(pool, { request, userId, amount, rrn, stan, res
       .input('RequestID', sql.BigInt, request.RequestID)
       .input('GatewayAuthority', sql.NVarChar(100), stan ? String(stan).slice(0, 100) : null)
       .input('GatewayRef', sql.NVarChar(100), rrn ? String(rrn).slice(0, 100) : null)
+      .input('PaymentChannel', sql.NVarChar(20), 'Pos')
+      .input('ViaKiosk', sql.Bit, 1)
       .query(`
         INSERT INTO OnlinePayment(
           VehicleID, TrackingNo, Amount, CalculatedAmount, UserId, PayedBit, Description,
-          Status, RequestID, GatewayAuthority, GatewayRef, PaidAt
+          Status, RequestID, GatewayAuthority, GatewayRef, PaidAt, PaymentChannel, ViaKiosk
         )
         VALUES (
           @VehicleID, @TrackingNo, @Amount, @CalculatedAmount, @UserId, 1, @Description,
-          N'Completed', @RequestID, @GatewayAuthority, @GatewayRef, SYSUTCDATETIME()
+          N'Completed', @RequestID, @GatewayAuthority, @GatewayRef, SYSUTCDATETIME(),
+          @PaymentChannel, @ViaKiosk
         )
       `);
   }
