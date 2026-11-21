@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-node src\main.js
+start "" powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0start-window.ps1"
