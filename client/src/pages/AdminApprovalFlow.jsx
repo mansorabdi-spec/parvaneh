@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 
 export default function AdminApprovalFlow() {
-  const [mainSection, setMainSection] = useState('issue') // 'issue' or 'renewal'
+  const [mainSection, setMainSection] = useState('issue') // 'issue', 'renewal', or 'cancel'
   const [activeTab, setActiveTab] = useState('Activity') // 'Activity', 'Employment', or 'Exploitation'
   const [activitySteps, setActivitySteps] = useState([])
   const [employmentSteps, setEmploymentSteps] = useState([])
@@ -10,6 +10,9 @@ export default function AdminApprovalFlow() {
   const [activityRenewalSteps, setActivityRenewalSteps] = useState([])
   const [employmentRenewalSteps, setEmploymentRenewalSteps] = useState([])
   const [exploitationRenewalSteps, setExploitationRenewalSteps] = useState([])
+  const [activityCancelSteps, setActivityCancelSteps] = useState([])
+  const [employmentCancelSteps, setEmploymentCancelSteps] = useState([])
+  const [exploitationCancelSteps, setExploitationCancelSteps] = useState([])
   const [roles, setRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -18,13 +21,16 @@ export default function AdminApprovalFlow() {
     setLoading(true)
     setError('')
     try {
-      const [activityFlow, employmentFlow, exploitationFlow, activityRenewalFlow, employmentRenewalFlow, exploitationRenewalFlow, allRoles] = await Promise.all([
+      const [activityFlow, employmentFlow, exploitationFlow, activityRenewalFlow, employmentRenewalFlow, exploitationRenewalFlow, activityCancelFlow, employmentCancelFlow, exploitationCancelFlow, allRoles] = await Promise.all([
         api.get('/api/approvals/flow?licenseType=Activity'),
         api.get('/api/approvals/flow?licenseType=Employment'),
         api.get('/api/approvals/flow?licenseType=Exploitation'),
         api.get('/api/approvals/flow?licenseType=Activity_Renewal'),
         api.get('/api/approvals/flow?licenseType=Employment_Renewal'),
         api.get('/api/approvals/flow?licenseType=Exploitation_Renewal'),
+        api.get('/api/approvals/flow?licenseType=Activity_Cancel'),
+        api.get('/api/approvals/flow?licenseType=Employment_Cancel'),
+        api.get('/api/approvals/flow?licenseType=Exploitation_Cancel'),
         api.get('/api/users/roles')
       ])
       setActivitySteps(activityFlow.data)
@@ -33,6 +39,9 @@ export default function AdminApprovalFlow() {
       setActivityRenewalSteps(activityRenewalFlow.data)
       setEmploymentRenewalSteps(employmentRenewalFlow.data)
       setExploitationRenewalSteps(exploitationRenewalFlow.data)
+      setActivityCancelSteps(activityCancelFlow.data)
+      setEmploymentCancelSteps(employmentCancelFlow.data)
+      setExploitationCancelSteps(exploitationCancelFlow.data)
       setRoles(allRoles.data.map(r => r.Name))
     } catch (e) {
       setError(e?.response?.data?.message || 'Failed to load approval flows')
@@ -48,9 +57,15 @@ export default function AdminApprovalFlow() {
       if (tab === 'Employment') return employmentRenewalSteps
       if (tab === 'Exploitation') return exploitationRenewalSteps
     }
+    if (section === 'cancel') {
+      if (tab === 'Activity') return activityCancelSteps
+      if (tab === 'Employment') return employmentCancelSteps
+      if (tab === 'Exploitation') return exploitationCancelSteps
+    }
     if (tab === 'Activity') return activitySteps
     if (tab === 'Employment') return employmentSteps
     if (tab === 'Exploitation') return exploitationSteps
+    return []
   }
 
   const setSteps = (tab, section, value) => {
@@ -58,6 +73,10 @@ export default function AdminApprovalFlow() {
       if (tab === 'Activity') setActivityRenewalSteps(value)
       if (tab === 'Employment') setEmploymentRenewalSteps(value)
       if (tab === 'Exploitation') setExploitationRenewalSteps(value)
+    } else if (section === 'cancel') {
+      if (tab === 'Activity') setActivityCancelSteps(value)
+      if (tab === 'Employment') setEmploymentCancelSteps(value)
+      if (tab === 'Exploitation') setExploitationCancelSteps(value)
     } else {
       if (tab === 'Activity') setActivitySteps(value)
       if (tab === 'Employment') setEmploymentSteps(value)
@@ -99,6 +118,11 @@ export default function AdminApprovalFlow() {
       if (tab === 'Employment') return 'Employment_Renewal'
       if (tab === 'Exploitation') return 'Exploitation_Renewal'
     }
+    if (section === 'cancel') {
+      if (tab === 'Activity') return 'Activity_Cancel'
+      if (tab === 'Employment') return 'Employment_Cancel'
+      if (tab === 'Exploitation') return 'Exploitation_Cancel'
+    }
     if (tab === 'Activity') return 'Activity'
     if (tab === 'Employment') return 'Employment'
     if (tab === 'Exploitation') return 'Exploitation'
@@ -109,6 +133,11 @@ export default function AdminApprovalFlow() {
       if (tab === 'Activity') return 'تمدید پروانه فعالیت'
       if (tab === 'Employment') return 'تمدید پروانه اشتغال'
       if (tab === 'Exploitation') return 'تمدید پروانه بهره برداری'
+    }
+    if (section === 'cancel') {
+      if (tab === 'Activity') return 'ابطال پروانه فعالیت'
+      if (tab === 'Employment') return 'ابطال پروانه اشتغال'
+      if (tab === 'Exploitation') return 'ابطال پروانه بهره برداری'
     }
     if (tab === 'Activity') return 'پروانه فعالیت'
     if (tab === 'Employment') return 'پروانه اشتغال'
@@ -161,6 +190,7 @@ export default function AdminApprovalFlow() {
           onClick={() => setMainSection('renewal')}
           style={{
             padding: '12px 30px',
+            marginRight: 10,
             background: mainSection === 'renewal' ? '#8b5cf6' : '#f3f4f6',
             color: mainSection === 'renewal' ? 'white' : '#374151',
             border: 'none',
@@ -171,6 +201,22 @@ export default function AdminApprovalFlow() {
           }}
         >
           🔄 فرآیند تایید تمدید پروانه
+        </button>
+        <button
+          onClick={() => setMainSection('cancel')}
+          style={{
+            padding: '12px 30px',
+            marginRight: 10,
+            background: mainSection === 'cancel' ? '#dc2626' : '#f3f4f6',
+            color: mainSection === 'cancel' ? 'white' : '#374151',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontWeight: mainSection === 'cancel' ? 'bold' : 'normal',
+            fontSize: '16px'
+          }}
+        >
+          ⛔ فرآیند تایید ابطال پرونده
         </button>
       </div>
 
@@ -226,10 +272,9 @@ export default function AdminApprovalFlow() {
       </div>
 
       <h3 style={{ marginBottom: 16 }}>
-        {mainSection === 'issue' 
-          ? (activeTab === 'Activity' ? 'فرآیند تایید صدور ' : activeTab === 'Employment' ? 'فرآیند تایید صدور ' : 'فرآیند تایید صدور ') + getLicenseTypeName(activeTab, mainSection).replace('تمدید ', '')
-          : getLicenseTypeName(activeTab, mainSection)
-        }
+        {mainSection === 'issue'
+          ? `فرآیند تایید صدور ${getLicenseTypeName(activeTab, mainSection)}`
+          : getLicenseTypeName(activeTab, mainSection)}
       </h3>
       
       <button onClick={addStep} style={{ marginBottom: 12 }}>افزودن مرحله</button>

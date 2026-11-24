@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-node src\pos-bridge.js
+cd /d "%~dp0..\kiosk-bridge"
+node src\main.js

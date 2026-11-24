@@ -119,21 +119,19 @@ export async function setUserRoles(req, res, next) {
     const { error, value } = setRolesSchema.validate(req.body);
     if (error) return res.status(400).json({ message: error.message });
 
-    // Check if requester is SuperAdmin-only (can't change user roles)
+    const pool = await getPool();
     const requesterId = req.user?.id;
-    if (requesterId) {
-      const pool = await getPool();
-      const userRoles = await loadRoleNames(pool, requesterId);
-      const hasSuperAdmin = userRoles.includes('superadmin');
-      const hasAdmin = userRoles.some(isAdminRoleName);
-      
-      // Superadmin cannot change roles, and cannot be told that an Admin role exists
-      if (hasSuperAdmin && !hasAdmin) {
-        return res.status(403).json({ message: 'شما اجازه تغییر نقش کاربران را ندارید' });
+    if (requesterId && await requesterIsSuperAdminOnly(pool, requesterId)) {
+      const targetRoles = await loadRoleNames(pool, userId);
+      if (targetRoles.some(isAdminRoleName)) {
+        return res.status(403).json({ message: 'اجازه تغییر نقش این کاربر را ندارید' });
+      }
+      const requestedRoles = [value.primaryRole, ...(value.roles || [])].filter(Boolean);
+      if (requestedRoles.some(isAdminRoleName)) {
+        return res.status(403).json({ message: 'اجازه اختصاص این نقش را ندارید' });
       }
     }
 
-    const pool = await getPool();
     const tx = new sql.Transaction(pool);
     await tx.begin();
     

@@ -1,6 +1,32 @@
 import Joi from 'joi';
 import { getPool, sql } from '../lib/db.js';
 
+const LICENSE_TYPES = [
+  'Activity',
+  'Employment',
+  'Exploitation',
+  'Activity_Renewal',
+  'Employment_Renewal',
+  'Exploitation_Renewal',
+  'Activity_Cancel',
+  'Employment_Cancel',
+  'Exploitation_Cancel'
+];
+
+async function ensureCancelFlowTypes(pool) {
+  await pool.request().query(`
+    IF EXISTS (
+      SELECT 1
+      FROM sys.check_constraints
+      WHERE name = N'CK_GlobalApprovalFlowSteps_LicenseType'
+        AND ISNULL(definition, N'') NOT LIKE N'%Activity_Cancel%'
+    )
+    BEGIN
+      ALTER TABLE GlobalApprovalFlowSteps DROP CONSTRAINT CK_GlobalApprovalFlowSteps_LicenseType;
+    END
+  `);
+}
+
 export async function getFlow(req, res, next) {
   try {
     const pool = await getPool();
@@ -13,7 +39,7 @@ export async function getFlow(req, res, next) {
 }
 
 const flowSchema = Joi.object({
-  licenseType: Joi.string().valid('Activity', 'Employment', 'Exploitation', 'Activity_Renewal', 'Employment_Renewal', 'Exploitation_Renewal').required(),
+  licenseType: Joi.string().valid(...LICENSE_TYPES).required(),
   steps: Joi.array().items(Joi.object({
     stepOrder: Joi.number().integer().min(1).required(),
     roleName: Joi.string().min(2).max(50).required()
@@ -26,6 +52,7 @@ export async function setFlow(req, res, next) {
     if (error) return res.status(400).json({ message: error.message });
 
     const pool = await getPool();
+    await ensureCancelFlowTypes(pool);
     const tx = new sql.Transaction(await pool);
     await tx.begin();
     try {

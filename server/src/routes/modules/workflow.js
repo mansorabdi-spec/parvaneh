@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { authRequired } from '../../middleware/auth.js';
 import { requirePermission, requireAnyPermission } from '../../middleware/permission.js';
 import { getPool, sql } from '../../lib/db.js';
@@ -18,8 +19,25 @@ import {
   submitCorrections,
   verifyLicenseByTracking,
   checkExistingExploitationLicense,
-  adminFixWorkflowStatus
+  adminFixWorkflowStatus,
+  startLicenseCancellation,
+  getCancellationAttachment
 } from '../../controllers/workflow.controller.js';
+
+const cancelUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }
+});
+
+function acceptCancellationFile(req, res, next) {
+  cancelUpload.single('attachment')(req, res, (err) => {
+    if (!err) return next();
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(400).json({
+      message: tooBig ? 'حجم فایل نباید بیشتر از 2 مگابایت باشد.' : (err.message || 'بارگذاری فایل انجام نشد')
+    });
+  });
+}
 
 const router = Router();
 
@@ -213,6 +231,8 @@ router.get('/requests/:requestId/steps', authRequired, getRequestWorkflowSteps);
 router.get('/requests/:requestId/history', authRequired, getRequestHistory);
 router.get('/requests/:requestId/deficiency-status', authRequired, getDeficiencyStatus);
 router.post('/requests/:requestId/submit-corrections', authRequired, submitCorrections);
+router.post('/requests/:requestId/cancel', authRequired, acceptCancellationFile, startLicenseCancellation);
+router.get('/requests/:requestId/cancellation-file', authRequired, getCancellationAttachment);
 
 // Workflow actions - requires approval permissions
 router.post('/steps/:stepId/decision', 

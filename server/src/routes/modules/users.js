@@ -10,7 +10,7 @@ router.get('/', authRequired, requireRoleOrExempt('Admin', 'superadmin'), listUs
 
 // Roles endpoints - Admin only (superadmin can read roles for user management)
 router.get('/roles', authRequired, requireRoleOrExempt('Admin', 'superadmin'), listRoles);
-router.put('/:id/roles', authRequired, requireRole('Admin'), excludeRole('superadmin'), setUserRoles);
+router.put('/:id/roles', authRequired, requireRoleOrExempt('Admin', 'superadmin'), setUserRoles);
 router.post('/roles', authRequired, requireRole('Admin'), excludeRole('superadmin'), createRole);
 router.put('/roles/:id', authRequired, requireRole('Admin'), excludeRole('superadmin'), updateRole);
 router.delete('/roles/:id', authRequired, requireRole('Admin'), excludeRole('superadmin'), deleteRole);

@@ -14,8 +14,8 @@ export default function AdminUsers() {
   const [companySearchTerm, setCompanySearchTerm] = useState('')
   const [showCompanyDropdown, setShowCompanyDropdown] = useState(false)
 
-  // Check if current user can edit roles (only Admin can, not superadmin)
-  const [canEditRoles, setCanEditRoles] = useState(false)
+  // Admin and superadmin can edit roles. Superadmin cannot see or assign Admin.
+  const [canEditRoles, setCanEditRoles] = useState(() => viewerIsSuperAdminOnly())
   const [hideAdmin, setHideAdmin] = useState(() => viewerIsSuperAdminOnly())
 
   useEffect(() => {
@@ -38,7 +38,7 @@ export default function AdminUsers() {
         const roleNames = [currentUser.Role, ...(currentUser.Roles || [])].filter(Boolean)
         const hasAdmin = roleNames.some(isAdminRoleName)
         const hasSuperAdmin = roleNames.includes('superadmin')
-        setCanEditRoles(hasAdmin)
+        setCanEditRoles(hasAdmin || hasSuperAdmin)
         setHideAdmin(hasSuperAdmin && !hasAdmin)
       } catch (e) {
         console.error('Error checking user roles:', e)

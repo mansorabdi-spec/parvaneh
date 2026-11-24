@@ -1,5 +1,5 @@
 import { sql } from './db.js';
-import { shamsiToGregorian } from '../utils/shamsiDateUtils.js';
+import { gregorianToShamsi, shamsiToGregorian } from '../utils/shamsiDateUtils.js';
 
 const STATUS_LABELS = {
   Approved: 'تایید شده',
@@ -140,6 +140,24 @@ export const REPORT_FIELDS = [
       ELSE N'پرداخت نشده'
     END` },
   { key: 'paidAmount', label: 'مبلغ پرداخت‌شده', group: 'payment', sql: 'COALESCE(payOnline.Amount, payOffline.Amount)', type: 'money' },
+  { key: 'receiptNo', label: 'شماره رسید', group: 'payment', defaultSelected: true, sql: `CASE
+      WHEN payOnline.Amount IS NOT NULL THEN NULLIF(LTRIM(RTRIM(COALESCE(payOnline.GatewayRef, payOnline.GatewayAuthority))), N'')
+      ELSE NULLIF(LTRIM(RTRIM(payOffline.ReceiptNo)), N'')
+    END` },
+  { key: 'paymentDate', label: 'تاریخ پرداخت', group: 'payment', defaultSelected: true, sql: `CASE
+      WHEN payOnline.Amount IS NOT NULL THEN CONVERT(NVARCHAR(33), payOnline.PaidAt, 126)
+      ELSE NULLIF(LTRIM(RTRIM(payOffline.PayDate)), N'')
+    END` },
+  { key: 'bankBranch', label: 'نام بانک و شعبه', group: 'payment', defaultSelected: true, sql: `CASE
+      WHEN payOnline.Amount IS NOT NULL THEN NULL
+      WHEN NULLIF(LTRIM(RTRIM(payOffline.BankName)), N'') IS NOT NULL
+           AND NULLIF(LTRIM(RTRIM(payOffline.BranchName)), N'') IS NOT NULL
+        THEN LTRIM(RTRIM(payOffline.BankName)) + N' - ' + LTRIM(RTRIM(payOffline.BranchName))
+      ELSE COALESCE(
+        NULLIF(LTRIM(RTRIM(payOffline.BankName)), N''),
+        NULLIF(LTRIM(RTRIM(payOffline.BranchName)), N'')
+      )
+    END` },
 
   { key: 'issueDate', label: 'تاریخ صدور', group: 'lifecycle', sql: 'lh.IssueDate' },
   { key: 'expiryDate', label: 'تاریخ انقضا', group: 'lifecycle', sql: 'lh.ExpiryDate' },
@@ -222,14 +240,14 @@ const FROM_SQL = `
     ORDER BY cc.IsActive DESC, cc.ContactID DESC
   ) ccp
   OUTER APPLY (
-    SELECT TOP 1 op.Amount
+    SELECT TOP 1 op.Amount, op.GatewayRef, op.GatewayAuthority, op.PaidAt
     FROM OnlinePayment op
     WHERE op.RequestID = vr.RequestID
       AND (op.PayedBit = 1 OR op.Status = N'Successful')
     ORDER BY op.Id DESC
   ) payOnline
   OUTER APPLY (
-    SELECT TOP 1 ofp.Amount
+    SELECT TOP 1 ofp.Amount, ofp.ReceiptNo, ofp.PayDate, ofp.BankName, ofp.BranchName
     FROM OfflinePayment ofp
     WHERE ofp.RequestID = vr.RequestID
     ORDER BY ofp.Id DESC
@@ -450,14 +468,27 @@ export async function queryComprehensiveReport(pool, { fieldKeys, filters, page 
   }
 
   const dataResult = await dataRequest.query(dataSql);
+  const rows = dataResult.recordset || [];
+  if (fields.some((field) => field.key === 'paymentDate')) {
+    for (const row of rows) row.paymentDate = displayPaymentDate(row.paymentDate);
+  }
   return {
     fields,
-    rows: dataResult.recordset || [],
+    rows,
     total,
     page: forExport ? 1 : safePage,
     pageSize: forExport ? exportLimit : safePageSize,
     truncated: forExport && total > exportLimit
   };
+}
+
+function displayPaymentDate(value) {
+  if (value == null || value === '') return value;
+  const text = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(text)) return text;
+  const date = new Date(text.endsWith('Z') ? text : `${text}Z`);
+  if (Number.isNaN(date.getTime())) return text;
+  return gregorianToShamsi(date);
 }
 
 export function statusLabel(value) {

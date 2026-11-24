@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import Joi from 'joi';
 import { getPool, sql } from '../lib/db.js';
 import { ensureOnlinePaymentChannel } from '../lib/ensureOnlinePaymentChannel.js';
@@ -595,6 +598,7 @@ export async function getRequestDetail(req, res, next) {
         // Tonnage (for exploitation licenses)
         tonnageFromTon: request.TonnageFromTon || null,
         tonnageToTon: request.TonnageToTon || null,
+        hasCancellationAttachment: fs.existsSync(path.join(cancellationUploadDir(), `${request.RequestID}.bin`)),
         // First issuance of this license, not the date of the request being printed.
         // A tracking number can be renewed for many years.
         issueDate: request.FirstIssueDate
@@ -1448,6 +1452,15 @@ export async function makeDecision(req, res, next) {
           if (requestDetailsResult.recordset.length > 0) {
             const requestDetails = requestDetailsResult.recordset[0];
             
+            const isCancellation = String(requestDetails.OperationTypeName || '').includes('ابطال');
+            if (isCancellation) {
+              await deactivateApprovedLicense(pool, requestDetails, {
+                userId,
+                userName,
+                roleName: step.RoleName
+              });
+              console.log(`🛑 License ${requestDetails.TrackingNo} cancelled after workflow approval`);
+            } else {
             // Determine event type based on operation type
             let eventType = 'Issued';
             if (requestDetails.OperationTypeName && requestDetails.OperationTypeName.includes('تمدید')) {
@@ -1541,6 +1554,7 @@ export async function makeDecision(req, res, next) {
                 console.error('⚠️ Failed to log license renewal:', renewalError);
                 // Don't fail the approval if renewal logging fails
               }
+            }
             }
           }
         } catch (historyError) {
@@ -3305,5 +3319,278 @@ export async function checkExistingExploitationLicense(req, res, next) {
   } catch (e) {
     console.error('❌ Error checking existing exploitation license:', e);
     next(e);
+  }
+}
+
+function cancellationUploadDir() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../uploads/cancellations');
+}
+
+function cancelFlowKey(source) {
+  const name = String(source.LicenseTypeName || '');
+  const tracking = String(source.TrackingNo || '');
+  if (source.LicenseTypeId === 68 || tracking.startsWith('11') || name.includes('بهره')) return 'Exploitation_Cancel';
+  if (source.LicenseTypeId === 67 || tracking.startsWith('2') || name.includes('اشتغال')) return 'Employment_Cancel';
+  return 'Activity_Cancel';
+}
+
+async function ensureCancelOperationType(pool) {
+  const existing = await pool.request()
+    .query(`SELECT TOP 1 Id FROM LookupValue WHERE Name = N'ابطال' ORDER BY Id`);
+  if (existing.recordset[0]?.Id) return existing.recordset[0].Id;
+
+  const sample = await pool.request()
+    .query(`SELECT TOP 1 CategoryId FROM LookupValue WHERE Name = N'تمدید' ORDER BY Id`);
+  const categoryId = sample.recordset[0]?.CategoryId;
+  if (!categoryId) {
+    const error = new Error('نوع عملیات ابطال در سیستم تعریف نشده است');
+    error.statusCode = 500;
+    throw error;
+  }
+  const inserted = await pool.request()
+    .input('CategoryId', sql.Int, categoryId)
+    .query(`
+      INSERT INTO LookupValue (CategoryId, Code, Name, IsActive, IsRequired, SortOrder)
+      OUTPUT INSERTED.Id
+      VALUES (@CategoryId, N'CANCEL', N'ابطال', 1, 0, 90)
+    `);
+  return inserted.recordset[0].Id;
+}
+
+async function deactivateApprovedLicense(pool, requestDetails, { userId, userName, roleName }) {
+  const reason = String(requestDetails.FinalDescription || 'ابطال پروانه').slice(0, 2000);
+  const today = getCurrentShamsiDate();
+  const current = await pool.request()
+    .input('TrackingNo', sql.NVarChar(30), requestDetails.TrackingNo)
+    .query(`
+      SELECT TOP 1 IssueDate, ExpiryDate
+      FROM LicenseHistory
+      WHERE TrackingNo = @TrackingNo AND Status = N'Active'
+      ORDER BY HistoryID DESC
+    `);
+  const issueDate = current.recordset[0]?.IssueDate || today;
+  const expiryDate = current.recordset[0]?.ExpiryDate || today;
+
+  await pool.request()
+    .input('TrackingNo', sql.NVarChar(30), requestDetails.TrackingNo)
+    .input('UserId', sql.Int, userId || null)
+    .input('UserName', sql.NVarChar(150), userName || null)
+    .input('Reason', sql.NVarChar(2000), reason)
+    .query(`
+      UPDATE LicenseHistory
+      SET Status = N'Cancelled',
+          RevokedAt = SYSUTCDATETIME(),
+          RevokedByUserId = @UserId,
+          RevokedByUsername = @UserName,
+          RevocationReason = @Reason,
+          UpdatedAt = SYSUTCDATETIME()
+      WHERE TrackingNo = @TrackingNo AND Status = N'Active'
+    `);
+
+  await pool.request()
+    .input('TrackingNo', sql.NVarChar(30), requestDetails.TrackingNo)
+    .input('RequestID', sql.BigInt, requestDetails.RequestID)
+    .query(`
+      UPDATE VehicleRequests
+      SET Status = N'Cancelled'
+      WHERE TrackingNo = @TrackingNo
+        AND RequestID <> @RequestID
+        AND Status = N'Approved'
+    `);
+
+  await logLicenseHistory({
+    requestId: requestDetails.RequestID,
+    trackingNo: requestDetails.TrackingNo,
+    licenseTypeId: requestDetails.LicenseTypeId,
+    licenseTypeName: requestDetails.LicenseTypeName,
+    operationTypeId: requestDetails.OperationTypeId,
+    operationTypeName: requestDetails.OperationTypeName,
+    eventType: 'Cancelled',
+    vehicleId: requestDetails.VehicleID,
+    nationalCode: requestDetails.NationalCode,
+    companyNationalId: requestDetails.CompanyNationalId,
+    issueDate,
+    expiryDate,
+    validityDurationMonths: 0,
+    status: 'Cancelled',
+    issuedByUserId: userId,
+    issuedByUsername: userName,
+    issuedByRole: roleName,
+    notes: reason
+  });
+}
+
+export async function startLicenseCancellation(req, res, next) {
+  try {
+    const sourceId = Number(req.params.requestId);
+    const reason = String(req.body?.reason || '').trim();
+    if (!sourceId) return res.status(400).json({ message: 'پرونده نامعتبر است' });
+    if (!reason) return res.status(400).json({ message: 'توضیحات دلیل ابطال را به طور کامل وارد کنید.' });
+    if (req.file && req.file.size > 2 * 1024 * 1024) {
+      return res.status(400).json({ message: 'حجم فایل نباید بیشتر از 2 مگابایت باشد.' });
+    }
+
+    const roles = [req.user?.role, ...(req.user?.roles || [])].filter(Boolean);
+    if (!roles.includes('Admin') && !roles.includes('superadmin')) {
+      return res.status(403).json({ message: 'اجازه ثبت ابطال را ندارید' });
+    }
+
+    const pool = await getPool();
+    const sourceResult = await pool.request()
+      .input('RequestID', sql.BigInt, sourceId)
+      .query(`
+        SELECT vr.RequestID, vr.TrackingNo, vr.Status, vr.LicenseTypeId, vr.VehicleID,
+               vr.NationalCode, vr.CompanyNationalId, lt.Name AS LicenseTypeName
+        FROM VehicleRequests vr
+        LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
+        WHERE vr.RequestID = @RequestID
+      `);
+    const source = sourceResult.recordset[0];
+    if (!source) return res.status(404).json({ message: 'پرونده یافت نشد' });
+    if (source.Status !== 'Approved') {
+      return res.status(400).json({ message: 'فقط پرونده‌ای که پروانه دارد قابل ابطال است' });
+    }
+
+    const activeLicense = await pool.request()
+      .input('TrackingNo', sql.NVarChar(30), source.TrackingNo)
+      .query(`
+        SELECT TOP 1 HistoryID
+        FROM LicenseHistory
+        WHERE TrackingNo = @TrackingNo AND Status = N'Active'
+      `);
+    if (!activeLicense.recordset[0]) {
+      return res.status(400).json({ message: 'این پرونده پروانه فعال ندارد' });
+    }
+
+    const openCancellation = await pool.request()
+      .input('TrackingNo', sql.NVarChar(30), source.TrackingNo)
+      .query(`
+        SELECT TOP 1 vr.RequestID
+        FROM VehicleRequests vr
+        INNER JOIN LookupValue ot ON vr.OperationTypeId = ot.Id
+        WHERE vr.TrackingNo = @TrackingNo
+          AND ot.Name LIKE N'%ابطال%'
+          AND vr.Status IN (N'Pending', N'InProgress', N'AwaitingPayment')
+      `);
+    if (openCancellation.recordset[0]) {
+      return res.status(400).json({ message: 'برای این پروانه یک درخواست ابطال در حال بررسی است' });
+    }
+
+    const flowKey = cancelFlowKey(source);
+    const flowResult = await pool.request()
+      .input('LicenseType', sql.NVarChar(30), flowKey)
+      .query(`
+        SELECT StepOrder, RoleName
+        FROM GlobalApprovalFlowSteps
+        WHERE LicenseType = @LicenseType
+        ORDER BY StepOrder
+      `);
+    if (!flowResult.recordset.length) {
+      return res.status(400).json({ message: 'فرآیند تایید ابطال این نوع پروانه در مدیریت فرآیند تایید تعریف نشده است' });
+    }
+
+    const operationTypeId = await ensureCancelOperationType(pool);
+    const inserted = await pool.request()
+      .input('NationalCode', sql.NVarChar(20), source.NationalCode || null)
+      .input('CompanyNationalId', sql.NVarChar(100), source.CompanyNationalId || null)
+      .input('VehicleID', sql.BigInt, source.VehicleID || null)
+      .input('LicenseTypeId', sql.Int, source.LicenseTypeId)
+      .input('OperationTypeId', sql.Int, operationTypeId)
+      .input('FinalDescription', sql.NVarChar(2000), reason.slice(0, 2000))
+      .input('TrackingNo', sql.NVarChar(30), source.TrackingNo)
+      .input('SubmittedByUserId', sql.Int, req.user.id)
+      .query(`
+        INSERT INTO VehicleRequests (
+          NationalCode, CompanyNationalId, VehicleID, LicenseTypeId, OperationTypeId,
+          FinalDescription, TrackingNo, SubmittedByUserId, DiscountStatus, OriginalAmount, FinalAmount
+        )
+        OUTPUT INSERTED.RequestID
+        VALUES (
+          @NationalCode, @CompanyNationalId, @VehicleID, @LicenseTypeId, @OperationTypeId,
+          @FinalDescription, @TrackingNo, @SubmittedByUserId, N'None', 0, 0
+        )
+      `);
+    const newRequestId = inserted.recordset[0]?.RequestID;
+    if (!newRequestId) return res.status(500).json({ message: 'ثبت درخواست ابطال انجام نشد' });
+
+    if (req.file) {
+      const dir = cancellationUploadDir();
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${newRequestId}.bin`), req.file.buffer);
+      fs.writeFileSync(path.join(dir, `${newRequestId}.json`), JSON.stringify({
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype || 'application/octet-stream',
+        size: req.file.size
+      }));
+    }
+
+    const firstStepOrder = Math.min(...flowResult.recordset.map((step) => Number(step.StepOrder)));
+    let firstRole = '';
+    for (const step of flowResult.recordset) {
+      const isFirst = Number(step.StepOrder) === firstStepOrder;
+      if (isFirst) firstRole = step.RoleName;
+      await pool.request()
+        .input('RequestID', sql.BigInt, newRequestId)
+        .input('StepOrder', sql.Int, step.StepOrder)
+        .input('RoleName', sql.NVarChar(50), step.RoleName)
+        .input('Status', sql.NVarChar(20), isFirst ? 'Pending' : 'NotStarted')
+        .query(`
+          INSERT INTO RequestWorkflowSteps (RequestID, StepOrder, RoleName, Status, Notes, CreatedAt)
+          VALUES (@RequestID, @StepOrder, @RoleName, @Status, NULL, GETDATE())
+        `);
+    }
+
+    await pool.request()
+      .input('RequestID', sql.BigInt, newRequestId)
+      .input('CurrentStepOrder', sql.Int, firstStepOrder)
+      .query(`
+        UPDATE VehicleRequests
+        SET Status = N'InProgress', CurrentStepOrder = @CurrentStepOrder
+        WHERE RequestID = @RequestID
+      `);
+
+    await pool.request()
+      .input('RequestID', sql.BigInt, newRequestId)
+      .input('ActionByUserId', sql.Int, req.user.id)
+      .input('ActionByUserName', sql.NVarChar(150), req.user.username || 'System')
+      .input('StepOrder', sql.Int, firstStepOrder)
+      .input('Notes', sql.NVarChar(sql.MAX), `درخواست ابطال ثبت شد و برای بررسی به ${firstRole} ارجاع شد`)
+      .query(`
+        INSERT INTO RequestProcessHistory
+          (RequestID, ActionType, ActionByUserId, ActionByUserName, FromStatus, ToStatus, StepOrder, Notes)
+        VALUES
+          (@RequestID, N'Created', @ActionByUserId, @ActionByUserName, N'Draft', N'InProgress', @StepOrder, @Notes)
+      `);
+
+    res.status(201).json({
+      requestId: newRequestId,
+      trackingNo: source.TrackingNo,
+      message: 'درخواست ابطال ثبت شد و طبق مراحل تعریف‌شده برای بررسی کارشناسان ارسال شد'
+    });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    console.error('startLicenseCancellation failed:', error);
+    next(error);
+  }
+}
+
+export async function getCancellationAttachment(req, res, next) {
+  try {
+    const requestId = String(req.params.requestId || '').replace(/\D/g, '');
+    if (!requestId) return res.status(400).json({ message: 'پرونده نامعتبر است' });
+    const binPath = path.join(cancellationUploadDir(), `${requestId}.bin`);
+    const metaPath = path.join(cancellationUploadDir(), `${requestId}.json`);
+    if (!fs.existsSync(binPath) || !fs.existsSync(metaPath)) {
+      return res.status(404).json({ message: 'پیوستی برای این درخواست نیست' });
+    }
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const filename = meta.fileName || 'attachment';
+    const encoded = encodeURIComponent(filename);
+    const ascii = filename.replace(/[^\x00-\x7F]/g, '_');
+    res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`);
+    fs.createReadStream(binPath).pipe(res);
+  } catch (error) {
+    next(error);
   }
 }

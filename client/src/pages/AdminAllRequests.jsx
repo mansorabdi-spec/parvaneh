@@ -54,6 +54,11 @@ export default function AdminAllRequests() {
   
   const [licenseTypes, setLicenseTypes] = useState([])
   const [operationTypes, setOperationTypes] = useState([])
+  const [cancelTarget, setCancelTarget] = useState(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelFile, setCancelFile] = useState(null)
+  const [cancelError, setCancelError] = useState('')
+  const [cancelSaving, setCancelSaving] = useState(false)
   const debounceTimer = useRef(null)
 
   // Helper to convert English numbers to Persian
@@ -317,6 +322,42 @@ export default function AdminAllRequests() {
   }
 
   // Handle renewal button click
+  const openCancelDialog = (req) => {
+    setCancelTarget(req)
+    setCancelReason('')
+    setCancelFile(null)
+    setCancelError('')
+  }
+
+  const submitCancellation = async () => {
+    if (!cancelTarget) return
+    if (!cancelReason.trim()) {
+      setCancelError('توضیحات دلیل ابطال را به طور کامل وارد کنید.')
+      return
+    }
+    if (cancelFile && cancelFile.size > 2 * 1024 * 1024) {
+      setCancelError('حجم فایل نباید بیشتر از 2 مگابایت باشد.')
+      return
+    }
+    try {
+      setCancelSaving(true)
+      setCancelError('')
+      const form = new FormData()
+      form.append('reason', cancelReason.trim())
+      if (cancelFile) form.append('attachment', cancelFile)
+      const { data } = await api.post(`/api/workflow/requests/${cancelTarget.RequestID}/cancel`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      alert(data?.message || 'درخواست ابطال ثبت شد')
+      setCancelTarget(null)
+      await loadRequests()
+    } catch (e) {
+      setCancelError(e?.response?.data?.message || 'ثبت درخواست ابطال انجام نشد')
+    } finally {
+      setCancelSaving(false)
+    }
+  }
+
   const handleRenewLicense = (req) => {
     // Navigate to the renewal page based on license type
     if (req.LicenseTypeName && req.LicenseTypeName.includes('بهره')) {
@@ -345,7 +386,8 @@ export default function AdminAllRequests() {
       'Pending': { label: 'در انتظار بررسی', color: '#f59e0b' },
       'InProgress': { label: 'در حال بررسی', color: '#3b82f6' },
       'Approved': { label: 'تایید شده', color: '#10b981' },
-      'Rejected': { label: 'رد شده', color: '#ef4444' }
+      'Rejected': { label: 'رد شده', color: '#ef4444' },
+      'Cancelled': { label: 'ابطال شده', color: '#64748b' }
     }
     const s = statusMap[status] || { label: status, color: '#6b7280' }
     return (
@@ -826,7 +868,8 @@ export default function AdminAllRequests() {
                       {(() => {
                         const isAdmin = currentUser?.Role === 'Admin'
                         const isDeputyAdmin = currentUser?.Role === 'superadmin'
-                        const canEdit = isAdmin || isDeputyAdmin
+                        const isCancelledCase = req.Status === 'Cancelled' || req.Status === 'Revoked' || String(req.OperationTypeName || '').includes('ابطال')
+                        const canEdit = (isAdmin || isDeputyAdmin) && !isCancelledCase
                         
                         // Debug log for first request only
                         if (requests.indexOf(req) === 0) {
@@ -894,9 +937,10 @@ export default function AdminAllRequests() {
                       {/* Print License button - check permission or Admin */}
                       {(() => {
                         const isApproved = req.Status === 'Approved';
+                        const isCancelledCase = req.Status === 'Cancelled' || req.Status === 'Revoked' || String(req.OperationTypeName || '').includes('ابطال');
                         const isAdmin = currentUser?.Role === 'Admin';
                         const hasPrintPermission = checkPermission('print_license');
-                        const shouldShow = isApproved && (isAdmin || hasPrintPermission);
+                        const shouldShow = isApproved && !isCancelledCase && (isAdmin || hasPrintPermission);
                         
                         // Debug log for first request only
                         if (requests.indexOf(req) === 0) {
@@ -932,7 +976,7 @@ export default function AdminAllRequests() {
                       })()}
                       
                       {/* Invoice button - show when request has payments */}
-                      {req.HasSuccessfulPayment && (
+                      {req.HasSuccessfulPayment && req.Status !== 'Cancelled' && req.Status !== 'Revoked' && !String(req.OperationTypeName || '').includes('ابطال') && (
                         <button
                           onClick={() => handleViewInvoice(req)}
                           style={{
@@ -990,8 +1034,10 @@ export default function AdminAllRequests() {
                           ? isExpired
                           : daysUntilExpiry <= renewalWindowDays
                         
-                        // Only show renew button for approved requests
-                        const shouldShow = canRenew && req.Status === 'Approved'
+                        const isCancellation = String(req.OperationTypeName || '').includes('ابطال')
+                        const hasActiveLicense = Boolean(req.ExpiryDate)
+                        // Only show renew button for approved requests that are still an issued license
+                        const shouldShow = canRenew && req.Status === 'Approved' && !isCancellation
                         
                         // Debug log for first request only
                         if (requests.indexOf(req) === 0) {
@@ -1034,6 +1080,23 @@ export default function AdminAllRequests() {
                               title={renewTitle}
                             >
                               🔄 تمدید
+                            </button>
+                            <button
+                              onClick={() => hasActiveLicense && openCancelDialog(req)}
+                              disabled={!hasActiveLicense}
+                              style={{
+                                padding: '6px 16px',
+                                background: hasActiveLicense ? '#dc2626' : '#d1d5db',
+                                color: hasActiveLicense ? 'white' : '#9ca3af',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: hasActiveLicense ? 'pointer' : 'not-allowed',
+                                fontSize: '13px',
+                                fontWeight: 'bold'
+                              }}
+                              title={hasActiveLicense ? 'درخواست ابطال پروانه' : 'این پرونده پروانه فعال ندارد'}
+                            >
+                              ⛔ ابطال
                             </button>
                             <button
                               onClick={() => {
@@ -1172,6 +1235,58 @@ export default function AdminAllRequests() {
           >
             بعدی
           </button>
+        </div>
+      )}
+
+      {cancelTarget && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.45)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          padding: 16
+        }}>
+          <div style={{ background: 'white', borderRadius: 12, width: '100%', maxWidth: 560, padding: 24 }}>
+            <h3 style={{ margin: '0 0 8px' }}>درخواست ابطال پروانه {cancelTarget.TrackingNo}</h3>
+            <p style={{ margin: '0 0 8px', color: '#374151', lineHeight: 1.8 }}>توضیحات دلیل ابطال را به طور کامل وارد کنید.</p>
+            <p style={{ margin: '0 0 8px', color: '#374151', lineHeight: 1.8 }}>در صورت نیاز، می‌توانید یک فایل پیوست (حداکثر 2 مگابایت) ضمیمه کنید.</p>
+            <p style={{ margin: '0 0 16px', color: '#374151', lineHeight: 1.8 }}>پس از ثبت درخواست، درخواست شما توسط کارشناسان بررسی خواهد شد.</p>
+            <textarea
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              rows={5}
+              placeholder="دلیل ابطال"
+              style={{ width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 8, fontFamily: 'inherit' }}
+            />
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+              onChange={(e) => setCancelFile(e.target.files?.[0] || null)}
+              style={{ marginTop: 12 }}
+            />
+            {cancelError && <div style={{ color: '#b91c1c', marginTop: 12 }}>{cancelError}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button
+                type="button"
+                onClick={() => setCancelTarget(null)}
+                disabled={cancelSaving}
+                style={{ padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: 8, background: 'white', cursor: 'pointer' }}
+              >
+                انصراف
+              </button>
+              <button
+                type="button"
+                onClick={submitCancellation}
+                disabled={cancelSaving}
+                style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: '#dc2626', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                {cancelSaving ? 'در حال ثبت...' : 'ثبت درخواست ابطال'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

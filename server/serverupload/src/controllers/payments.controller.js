@@ -4,6 +4,60 @@ import { getPool, sql } from '../lib/db.js';
 import { ensureOnlinePaymentChannel } from '../lib/ensureOnlinePaymentChannel.js';
 import { initializeWorkflow } from './workflow.controller.js';
 
+const PAYABLE_REQUEST_STATUSES = ['Pending', 'AwaitingPayment'];
+
+function isPayableRequestStatus(status) {
+  return PAYABLE_REQUEST_STATUSES.includes(status);
+}
+
+// Renewals reuse the original tracking number, so a tracking lookup can return
+// the already-approved license. Online payment must follow the open request.
+async function resolveRequestAfterOnlinePayment(pool, { paymentRequestId, trackingNo }) {
+  const columns = 'RequestID, SubmittedByUserId, Status, LicenseTypeId, TrackingNo';
+
+  if (paymentRequestId) {
+    const byId = await pool.request()
+      .input('RequestID', sql.BigInt, paymentRequestId)
+      .query(`SELECT ${columns} FROM VehicleRequests WHERE RequestID = @RequestID`);
+    const row = byId.recordset[0];
+    if (row && isPayableRequestStatus(row.Status)) return row;
+  }
+
+  if (trackingNo) {
+    const open = await pool.request()
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .query(`
+        SELECT TOP 1 ${columns}
+        FROM VehicleRequests
+        WHERE TrackingNo = @TrackingNo
+          AND Status IN (N'Pending', N'AwaitingPayment')
+        ORDER BY RequestID DESC
+      `);
+    if (open.recordset[0]) return open.recordset[0];
+  }
+
+  if (paymentRequestId) {
+    const byId = await pool.request()
+      .input('RequestID', sql.BigInt, paymentRequestId)
+      .query(`SELECT ${columns} FROM VehicleRequests WHERE RequestID = @RequestID`);
+    if (byId.recordset[0]) return byId.recordset[0];
+  }
+
+  if (trackingNo) {
+    const latest = await pool.request()
+      .input('TrackingNo', sql.NVarChar(30), trackingNo)
+      .query(`
+        SELECT TOP 1 ${columns}
+        FROM VehicleRequests
+        WHERE TrackingNo = @TrackingNo
+        ORDER BY RequestID DESC
+      `);
+    return latest.recordset[0] || null;
+  }
+
+  return null;
+}
+
 const createSchema = Joi.object({
   vehicleId: Joi.number().integer().allow(null).optional(), // Optional for exploitation licenses
   trackingNo: Joi.string().max(30).required(),
@@ -23,14 +77,41 @@ export async function createOnlinePayment(req, res, next) {
     const pool = await getPool();
     await ensureOnlinePaymentChannel(pool);
     
-    // Get RequestID from TrackingNo if not provided
+    // Prefer the open renewal/new request. A shared tracking number also
+    // belongs to the previously approved license.
     let requestId = value.requestId || null;
+    if (requestId) {
+      const selected = await pool.request()
+        .input('RequestID', sql.BigInt, requestId)
+        .query(`SELECT Status FROM VehicleRequests WHERE RequestID = @RequestID`);
+      if (!selected.recordset[0] || !isPayableRequestStatus(selected.recordset[0].Status)) {
+        requestId = null;
+      }
+    }
     if (!requestId && value.trackingNo) {
       const reqResult = await pool.request()
         .input('TrackingNo', sql.NVarChar(30), value.trackingNo)
-        .query(`SELECT RequestID FROM VehicleRequests WHERE TrackingNo = @TrackingNo`);
+        .query(`
+          SELECT TOP 1 RequestID
+          FROM VehicleRequests
+          WHERE TrackingNo = @TrackingNo
+            AND Status IN (N'Pending', N'AwaitingPayment')
+          ORDER BY RequestID DESC
+        `);
       if (reqResult.recordset.length > 0) {
         requestId = reqResult.recordset[0].RequestID;
+      } else {
+        const latest = await pool.request()
+          .input('TrackingNo', sql.NVarChar(30), value.trackingNo)
+          .query(`
+            SELECT TOP 1 RequestID
+            FROM VehicleRequests
+            WHERE TrackingNo = @TrackingNo
+            ORDER BY RequestID DESC
+          `);
+        if (latest.recordset.length > 0) {
+          requestId = latest.recordset[0].RequestID;
+        }
       }
     }
     
@@ -892,18 +973,29 @@ export async function verifyPayment(req, res, next) {
         // Initialize workflow after successful online payment
         if (updatedPayment) {
           const trackingNo = updatedPayment.TrackingNo;
-          
-          // Find the request associated with this tracking number
-          const requestResult = await pool.request()
-            .input('TrackingNo', sql.NVarChar(30), trackingNo)
-            .query(`SELECT RequestID, SubmittedByUserId, Status, LicenseTypeId, TrackingNo FROM VehicleRequests WHERE TrackingNo = @TrackingNo`);
-          
-          if (requestResult.recordset.length > 0) {
-            const requestId = requestResult.recordset[0].RequestID;
-            const userId = requestResult.recordset[0].SubmittedByUserId;
-            const requestStatus = requestResult.recordset[0].Status;
-            const licenseTypeId = requestResult.recordset[0].LicenseTypeId;
-            const trackingNoFromDB = requestResult.recordset[0].TrackingNo;
+          const paidRequest = await resolveRequestAfterOnlinePayment(pool, {
+            paymentRequestId: updatedPayment.RequestID,
+            trackingNo
+          });
+
+          if (
+            paidRequest &&
+            isPayableRequestStatus(paidRequest.Status) &&
+            String(updatedPayment.RequestID || '') !== String(paidRequest.RequestID)
+          ) {
+            await pool.request()
+              .input('Id', sql.BigInt, updatedPayment.Id)
+              .input('RequestID', sql.BigInt, paidRequest.RequestID)
+              .query(`UPDATE OnlinePayment SET RequestID = @RequestID WHERE Id = @Id`);
+            updatedPayment.RequestID = paidRequest.RequestID;
+          }
+
+          if (paidRequest) {
+            const requestId = paidRequest.RequestID;
+            const userId = paidRequest.SubmittedByUserId;
+            const requestStatus = paidRequest.Status;
+            const licenseTypeId = paidRequest.LicenseTypeId;
+            const trackingNoFromDB = paidRequest.TrackingNo;
             
             // Check if this is an exploitation license
             // Format: 11YY-NNNN (YY = activity category code)

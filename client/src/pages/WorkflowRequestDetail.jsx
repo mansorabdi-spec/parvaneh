@@ -1413,10 +1413,29 @@ export default function WorkflowRequestDetail() {
           {request.finalDescription && (
             <div style={{ border: '1px solid #d1d5db', borderRadius: '8px', overflow: 'hidden' }}>
               <div style={{ background: '#6b7280', color: 'white', padding: '12px 20px', fontSize: '16px', fontWeight: 'bold' }}>
-                📝 توضیحات نهایی
+                {String(request.operationTypeName || '').includes('ابطال') ? '⛔ دلیل ابطال' : '📝 توضیحات نهایی'}
               </div>
               <div style={{ padding: '20px', color: '#374151' }}>
                 {request.finalDescription}
+                {request.hasCancellationAttachment && (
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const response = await api.get(`/api/workflow/requests/${request.requestId}/cancellation-file`, { responseType: 'blob' })
+                        const url = URL.createObjectURL(response.data)
+                        const link = document.createElement('a')
+                        link.href = url
+                        link.download = 'پیوست-ابطال'
+                        link.click()
+                        URL.revokeObjectURL(url)
+                      }}
+                      style={{ padding: '8px 14px', border: 'none', borderRadius: 6, background: '#1d4ed8', color: 'white', cursor: 'pointer' }}
+                    >
+                      دریافت فایل پیوست
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

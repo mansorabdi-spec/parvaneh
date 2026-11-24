@@ -656,11 +656,12 @@ export default function UserInbox() {
                 // Allow editing if:
                 // 1. It's my request AND not yet reviewed by expert AND no payment
                 // 2. OR it has a deficiency (regardless of payment - user MUST be able to fix deficiencies even after payment)
-                const canEdit = isMyRequest && (
+                const isCancelledCase = task.RequestStatus === 'Cancelled' || task.RequestStatus === 'Revoked' || String(task.OperationTypeName || '').includes('ابطال')
+                const canEdit = isMyRequest && !isCancelledCase && (
                   (notYetReviewed && !task.HasSuccessfulPayment) || 
                   hasDeficiency
                 )
-                const canPrint = isMyRequest && task.RequestStatus === 'Approved'
+                const canPrint = isMyRequest && task.RequestStatus === 'Approved' && !isCancelledCase
                 const hasPaid = task.HasSuccessfulPayment === 1 || task.HasSuccessfulPayment === true
                 const canViewInvoice = hasPaid && (isMyRequest || task.SourceType === 'workflow')
                 
@@ -699,7 +700,7 @@ export default function UserInbox() {
                 const employmentNeedsPayment = isEmploymentLicense && !task.HasSuccessfulPayment
                 const exploitationNeedsPayment = isExploitationLicense && !task.HasSuccessfulPayment && (task.RequestStatus === 'AwaitingPayment' || task.StepOrder >= 3)
                 
-                const needsPayment = isMyRequest && (
+                const needsPayment = isMyRequest && !isCancelledCase && (
                   activityNeedsPayment ||
                   employmentNeedsPayment ||
                   exploitationNeedsPayment
