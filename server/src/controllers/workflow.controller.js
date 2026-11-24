@@ -3430,23 +3430,24 @@ export async function startLicenseCancellation(req, res, next) {
       return res.status(400).json({ message: 'حجم فایل نباید بیشتر از 2 مگابایت باشد.' });
     }
 
-    const roles = [req.user?.role, ...(req.user?.roles || [])].filter(Boolean);
-    if (!roles.includes('Admin') && !roles.includes('superadmin')) {
-      return res.status(403).json({ message: 'اجازه ثبت ابطال را ندارید' });
-    }
-
     const pool = await getPool();
     const sourceResult = await pool.request()
       .input('RequestID', sql.BigInt, sourceId)
       .query(`
         SELECT vr.RequestID, vr.TrackingNo, vr.Status, vr.LicenseTypeId, vr.VehicleID,
-               vr.NationalCode, vr.CompanyNationalId, lt.Name AS LicenseTypeName
+               vr.NationalCode, vr.CompanyNationalId, vr.SubmittedByUserId, lt.Name AS LicenseTypeName
         FROM VehicleRequests vr
         LEFT JOIN LookupValue lt ON vr.LicenseTypeId = lt.Id
         WHERE vr.RequestID = @RequestID
       `);
     const source = sourceResult.recordset[0];
     if (!source) return res.status(404).json({ message: 'پرونده یافت نشد' });
+    const roles = [req.user?.role, ...(req.user?.roles || [])].filter(Boolean);
+    const isStaff = roles.includes('Admin') || roles.includes('superadmin');
+    const isOwner = Number(source.SubmittedByUserId) === Number(req.user?.id);
+    if (!isStaff && !isOwner) {
+      return res.status(403).json({ message: 'اجازه ثبت ابطال را ندارید' });
+    }
     if (source.Status !== 'Approved') {
       return res.status(400).json({ message: 'فقط پرونده‌ای که پروانه دارد قابل ابطال است' });
     }
