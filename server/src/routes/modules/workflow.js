@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authRequired } from '../../middleware/auth.js';
-import { requirePermission, requireAnyPermission } from '../../middleware/permission.js';
+import { requirePermission } from '../../middleware/permission.js';
 import { getPool, sql } from '../../lib/db.js';
 import {
   getMyInbox,
@@ -234,15 +234,10 @@ router.post('/requests/:requestId/submit-corrections', authRequired, submitCorre
 router.post('/requests/:requestId/cancel', authRequired, acceptCancellationFile, startLicenseCancellation);
 router.get('/requests/:requestId/cancellation-file', authRequired, getCancellationAttachment);
 
-// Workflow actions - requires approval permissions
-router.post('/steps/:stepId/decision', 
-  authRequired, 
-  requireAnyPermission([
-    { key: 'approve_request', action: 'view' },
-    { key: 'reject_request', action: 'view' }
-  ]),
-  makeDecision
-);
+// The caller must be switched to the role assigned on the step.
+// Checking Users.Role here rejected superadmin users after they switched
+// into an operational role such as رییس اداره صدور پروانه.
+router.post('/steps/:stepId/decision', authRequired, makeDecision);
 
 router.post('/steps/:stepId/fix-deficiency', authRequired, fixDeficiency);
 

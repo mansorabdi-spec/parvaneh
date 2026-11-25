@@ -318,6 +318,12 @@ export default function WorkflowRequestDetail() {
     )
   }
 
+  const normalizeRoleName = (value) => String(value || '')
+    .trim()
+    .replace(/\u200c/g, '')
+    .replace(/\u064a/g, '\u06cc')
+    .replace(/\u0643/g, '\u06a9')
+
   const getCurrentStep = () => {
     return steps.find(s => s.Status === 'Pending')
   }
@@ -328,6 +334,11 @@ export default function WorkflowRequestDetail() {
 
   const { request, permissions, person, personDocuments, vehicle, vehicleDocuments, discountDocuments, payments, residences, contacts, company, companyAddresses, companyContacts, companyDocuments } = data
   const currentStep = getCurrentStep()
+  const canActOnCurrentStep = Boolean(
+    currentStep &&
+    currentUser?.Role &&
+    normalizeRoleName(currentUser.Role) === normalizeRoleName(currentStep.RoleName)
+  )
   
   // Check if current user is a label specialist
   const isLabelSpecialist = currentUser?.Role === 'کارشناس الصاق برچسب'
@@ -1535,7 +1546,7 @@ export default function WorkflowRequestDetail() {
       )}
 
       {/* Action Buttons - Bottom Section */}
-      {currentStep && permissions['approve_request']?.canView && (
+      {canActOnCurrentStep && (
         <div style={{ 
           marginTop: '40px', 
           padding: '24px', 

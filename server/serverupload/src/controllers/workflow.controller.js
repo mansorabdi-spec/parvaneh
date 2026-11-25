@@ -8,6 +8,14 @@ import { logLicenseHistory, calculateExpiryDate } from '../utils/licenseHistoryL
 import { logLicenseRenewal } from '../utils/licenseRenewalLogger.js';
 import { getCurrentShamsiDate, addOneYearShamsi, shamsiToGregorian, gregorianToShamsi } from '../utils/shamsiDateUtils.js';
 
+function normalizeRoleName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\u200c/g, '')
+    .replace(/\u064a/g, '\u06cc')
+    .replace(/\u0643/g, '\u06a9');
+}
+
 // Public endpoint to verify license by tracking number (no authentication required)
 export async function verifyLicenseByTracking(req, res, next) {
   try {
@@ -1120,8 +1128,7 @@ export async function makeDecision(req, res, next) {
     
     const userId = req.user.id;
     const userName = req.user.username;
-    const userRole = req.user.role;
-    const userRoles = [userRole, ...(req.user.roles || [])];
+    const activeRole = normalizeRoleName(req.user.role);
     
     const pool = await getPool();
     const tx = new sql.Transaction(pool);
@@ -1139,8 +1146,10 @@ export async function makeDecision(req, res, next) {
         return res.status(404).json({ message: 'Workflow step not found' });
       }
       
-      // Check if user has permission (role matches)
-      if (!userRoles.includes(step.RoleName)) {
+      // Decide only while acting as the role this step is waiting for.
+      // Possession of other roles, including the primary role, is not enough.
+      if (!activeRole || activeRole !== normalizeRoleName(step.RoleName)) {
+        console.warn(`Decision denied for user ${userId}: activeRole="${req.user.role}" stepRole="${step.RoleName}"`);
         await tx.rollback();
         return res.status(403).json({ message: 'You do not have permission for this step' });
       }
